@@ -3,6 +3,7 @@ package rag
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/enterprise/ai-agent-go/internal/cache"
+	"github.com/enterprise/ai-agent-go/internal/embedding"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/vectordb"
 )
@@ -30,14 +32,16 @@ const (
 // 支持向量检索、关键词检索和混合检索三种模式，通过 RRF 算法融合多路结果。
 type Retriever struct {
 	vectorDB vectordb.VectorDB
+	embedder embedding.Client
 	cache    cache.Cache
 	logger   *zap.Logger
 }
 
 // NewRetriever 创建多路检索引擎
-func NewRetriever(vectorDB vectordb.VectorDB, cache cache.Cache, logger *zap.Logger) *Retriever {
+func NewRetriever(vectorDB vectordb.VectorDB, embedder embedding.Client, cache cache.Cache, logger *zap.Logger) *Retriever {
 	return &Retriever{
 		vectorDB: vectorDB,
+		embedder: embedder,
 		cache:    cache,
 		logger:   logger,
 	}
@@ -64,11 +68,12 @@ func (r *Retriever) RetrieveWithMode(ctx context.Context, query string, topK int
 
 // vectorSearch 向量相似度检索
 func (r *Retriever) vectorSearch(ctx context.Context, query string, topK int) ([]model.Reference, error) {
-	// 实际实现需要先将 query 转换为向量
-	// embedding, err := r.embeddingClient.Embed(ctx, query)
-	var queryVector []float32 // 占位
+	queryVector, err := r.embedder.Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("查询向量化失败: %w", err)
+	}
 
-	results, err := r.vectorDB.Search(ctx, "documents", queryVector, topK)
+	results, err := r.vectorDB.Search(ctx, "", queryVector, topK)
 	if err != nil {
 		r.logger.Error("向量检索失败", zap.Error(err))
 		return nil, err
@@ -76,8 +81,13 @@ func (r *Retriever) vectorSearch(ctx context.Context, query string, topK int) ([
 
 	refs := make([]model.Reference, 0, len(results))
 	for _, result := range results {
+		docID := result.Metadata["doc_id"]
+		if docID == "" {
+			docID = result.ID
+		}
 		refs = append(refs, model.Reference{
-			DocID:   result.ID,
+			DocID:   docID,
+			Title:   result.Metadata["title"],
 			Content: result.Content,
 			Score:   result.Score,
 		})

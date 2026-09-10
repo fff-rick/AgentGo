@@ -2,12 +2,14 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -35,9 +37,10 @@ type Client interface {
 
 // StreamEvent 流式响应事件
 type StreamEvent struct {
-	Content string // 文本内容增量
-	Done    bool   // 是否结束
-	Err     error  // 错误信息
+	Content   string // 文本内容增量
+	Reasoning string // 模型显式返回的 reasoning_content/reasoning/thinking
+	Done      bool   // 是否结束
+	Err       error  // 错误信息
 }
 
 // HTTPClient 基于 HTTP 的 LLM 客户端实现（兼容 OpenAI API 格式）
@@ -150,28 +153,65 @@ func (c *HTTPClient) readSSEStream(ctx context.Context, body io.ReadCloser, ch c
 	defer close(ch)
 	defer body.Close()
 
-	buf := make([]byte, 4096)
-	for {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 4096), 1024*1024)
+	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
 			ch <- StreamEvent{Err: ctx.Err()}
 			return
 		default:
 		}
-
-		n, err := body.Read(buf)
-		if n > 0 {
-			content := string(buf[:n])
-			ch <- StreamEvent{Content: content}
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
 		}
-		if err != nil {
-			if err != io.EOF {
-				ch <- StreamEvent{Err: err}
-			}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "[DONE]" {
+			ch <- StreamEvent{Done: true}
+			return
+		}
+		var chunk openAIStreamResponse
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			ch <- StreamEvent{Err: fmt.Errorf("解析 SSE 数据失败: %w", err)}
+			return
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		delta := chunk.Choices[0].Delta
+		reasoning := delta.ReasoningContent
+		if reasoning == "" {
+			reasoning = delta.Reasoning
+		}
+		if reasoning == "" {
+			reasoning = delta.Thinking
+		}
+		if delta.Content != "" || reasoning != "" {
+			ch <- StreamEvent{Content: delta.Content, Reasoning: reasoning}
+		}
+		if chunk.Choices[0].FinishReason != "" {
 			ch <- StreamEvent{Done: true}
 			return
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		ch <- StreamEvent{Err: err}
+		return
+	}
+	ch <- StreamEvent{Done: true}
+}
+
+type openAIStreamResponse struct {
+	Choices []struct {
+		Delta struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			Reasoning        string `json:"reasoning"`
+			Thinking         string `json:"thinking"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
 }
 
 // Name 返回客户端名称
@@ -200,8 +240,11 @@ func (c *HTTPClient) Healthy(ctx context.Context) bool {
 type openAIResponse struct {
 	Choices []struct {
 		Message struct {
-			Content   string           `json:"content"`
-			ToolCalls []model.LLMToolCall `json:"tool_calls,omitempty"`
+			Content          string              `json:"content"`
+			ReasoningContent string              `json:"reasoning_content"`
+			Reasoning        string              `json:"reasoning"`
+			Thinking         string              `json:"thinking"`
+			ToolCalls        []model.LLMToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 	} `json:"choices"`
 	Usage *model.UsageInfo `json:"usage,omitempty"`
@@ -213,8 +256,16 @@ func (r *openAIResponse) toLLMResponse() *model.LLMResponse {
 		Usage: r.Usage,
 	}
 	if len(r.Choices) > 0 {
-		resp.Content = r.Choices[0].Message.Content
-		resp.ToolCalls = r.Choices[0].Message.ToolCalls
+		message := r.Choices[0].Message
+		resp.Content = message.Content
+		resp.Reasoning = message.ReasoningContent
+		if resp.Reasoning == "" {
+			resp.Reasoning = message.Reasoning
+		}
+		if resp.Reasoning == "" {
+			resp.Reasoning = message.Thinking
+		}
+		resp.ToolCalls = message.ToolCalls
 	}
 	return resp
 }

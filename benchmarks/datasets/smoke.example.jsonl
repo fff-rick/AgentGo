@@ -1,0 +1,4 @@
+{"id":"chat-hello","category":"chat","message":"你好，请只回复：你好","expected":{"keywords_all":["你好"],"max_latency_ms":10000}}
+{"id":"tool-calculator","category":"tool","message":"请计算 6 乘以 7，并给出结果。","expected":{"keywords_all":["42"],"tool":"calculator","max_latency_ms":15000}}
+{"id":"tool-search","category":"tool","message":"搜索 AgentGo benchmark，告诉我搜索是否执行。","expected":{"keywords_any":["搜索","结果"],"tool":"web_search","max_latency_ms":15000}}
+{"id":"memory-name","category":"memory","turns":["记住：我的代号是青鸟。","我的代号是什么？"],"expected":{"keywords_all":["青鸟"],"max_latency_ms":20000}}

@@ -14,6 +14,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/llm"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/observe"
 	"github.com/enterprise/ai-agent-go/internal/rag"
 	"github.com/enterprise/ai-agent-go/internal/tool"
 )
@@ -38,10 +39,10 @@ type OrchestratorDeps struct {
 // 3. 管理上下文记忆
 // 4. 编排 RAG 检索和工具调用
 type Orchestrator struct {
-	deps        OrchestratorDeps
-	reactAgent  *ReActAgent
-	planner     *PlannerAgent
-	reflector   *ReflectionAgent
+	deps       OrchestratorDeps
+	reactAgent *ReActAgent
+	planner    *PlannerAgent
+	reflector  *ReflectionAgent
 }
 
 // NewOrchestrator 创建 Agent 编排器并初始化所有子 Agent
@@ -75,13 +76,16 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 	startTime := time.Now()
 
 	// 1. 意图识别
+	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "intent", Message: "正在识别请求意图"})
 	intentResult, err := o.deps.IntentRecognizer.Recognize(ctx, req.Message)
 	if err != nil {
 		o.deps.Logger.Warn("意图识别失败，使用默认策略", zap.Error(err))
 		intentResult = &model.IntentResult{Intent: "chat", Confidence: 0.5}
 	}
+	observe.Emit(ctx, observe.Event{Type: observe.TypeIntent, Stage: "intent", Intent: intentResult.Intent, Confidence: intentResult.Confidence, Message: "意图识别完成"})
 
 	// 2. 加载历史上下文
+	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "memory", Message: "正在加载会话上下文"})
 	history, err := o.deps.MemoryManager.LoadContext(ctx, req.SessionID, 10)
 	if err != nil {
 		o.deps.Logger.Warn("加载上下文失败", zap.Error(err))
@@ -92,6 +96,7 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 	var answer string
 	var toolCalls []model.ToolCallInfo
 	var references []model.Reference
+	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "route", Message: routeMessage(intentResult.Intent)})
 
 	switch intentResult.Intent {
 	case intent.IntentRAGQuery:
@@ -107,18 +112,27 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 	if err != nil {
 		return nil, err
 	}
+	for i := range toolCalls {
+		call := toolCalls[i]
+		observe.Emit(ctx, observe.Event{Type: observe.TypeToolResult, Stage: "tool", Message: call.Output, Tool: &call})
+	}
+	if len(references) > 0 {
+		observe.Emit(ctx, observe.Event{Type: observe.TypeReferences, Stage: "rag", Message: fmt.Sprintf("检索到 %d 条相关引用", len(references)), References: references})
+	}
 
 	// 4. 反思改进（如果启用）
 	if o.deps.Config.EnableReflection && len(answer) > 0 {
+		observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "reflection", Message: "正在检查答案质量"})
 		improved, reflectErr := o.reflector.Reflect(ctx, req.Message, answer)
 		if reflectErr == nil && improved != "" {
 			answer = improved
 		}
 	}
-
 	// 5. 保存本轮对话到记忆
+	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "memory", Message: "正在保存会话记忆"})
 	_ = o.deps.MemoryManager.SaveMessage(ctx, req.SessionID, "user", req.Message)
 	_ = o.deps.MemoryManager.SaveMessage(ctx, req.SessionID, "assistant", answer)
+	observe.Emit(ctx, observe.Event{Type: observe.TypeAnswer, Stage: "answer", Message: answer})
 
 	resp := &model.ChatResponse{
 		SessionID:  req.SessionID,
@@ -136,6 +150,19 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 	return resp, nil
 }
 
+func routeMessage(intentName string) string {
+	switch intentName {
+	case intent.IntentRAGQuery:
+		return "正在进行知识库检索与回答生成"
+	case intent.IntentToolUse:
+		return "正在执行 ReAct 工具调用"
+	case intent.IntentComplexTask:
+		return "正在规划并执行复杂任务"
+	default:
+		return "正在生成对话答案"
+	}
+}
+
 // handleChat 处理普通对话
 func (o *Orchestrator) handleChat(ctx context.Context, message string, history []model.LLMMessage) (string, error) {
 	messages := append(history, model.LLMMessage{
@@ -147,6 +174,9 @@ func (o *Orchestrator) handleChat(ctx context.Context, message string, history [
 	resp, err := o.deps.ModelRouter.Chat(ctx, req)
 	if err != nil {
 		return "", err
+	}
+	if resp.Reasoning != "" {
+		observe.Emit(ctx, observe.Event{Type: observe.TypeReasoning, Stage: "model", Message: resp.Reasoning})
 	}
 	return resp.Content, nil
 }

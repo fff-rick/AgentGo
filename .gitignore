@@ -1,0 +1,4 @@
+bin/
+/tui
+.env
+benchmark-report.json

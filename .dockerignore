@@ -1,0 +1,7 @@
+.git
+.env
+bin
+tui
+coverage.out
+benchmark-report.json
+*.log

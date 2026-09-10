@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -12,14 +13,15 @@ import (
 
 // Config 应用程序全局配置结构
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	LLM      LLMConfig      `mapstructure:"llm"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	Milvus   MilvusConfig   `mapstructure:"milvus"`
-	Postgres PostgresConfig `mapstructure:"postgres"`
-	Agent    AgentConfig    `mapstructure:"agent"`
-	RAG      RAGConfig      `mapstructure:"rag"`
-	Log      LogConfig      `mapstructure:"log"`
+	Server    ServerConfig    `mapstructure:"server"`
+	LLM       LLMConfig       `mapstructure:"llm"`
+	Redis     RedisConfig     `mapstructure:"redis"`
+	Milvus    MilvusConfig    `mapstructure:"milvus"`
+	Embedding EmbeddingConfig `mapstructure:"embedding"`
+	Postgres  PostgresConfig  `mapstructure:"postgres"`
+	Agent     AgentConfig     `mapstructure:"agent"`
+	RAG       RAGConfig       `mapstructure:"rag"`
+	Log       LogConfig       `mapstructure:"log"`
 }
 
 // ServerConfig HTTP 服务器配置
@@ -32,10 +34,10 @@ type ServerConfig struct {
 
 // LLMConfig 大语言模型客户端配置
 type LLMConfig struct {
-	Models          []ModelConfig  `mapstructure:"models"`
-	DefaultModel    string         `mapstructure:"default_model"`
-	RequestTimeout  time.Duration  `mapstructure:"request_timeout"`
-	CircuitBreaker  CBConfig       `mapstructure:"circuit_breaker"`
+	Models         []ModelConfig `mapstructure:"models"`
+	DefaultModel   string        `mapstructure:"default_model"`
+	RequestTimeout time.Duration `mapstructure:"request_timeout"`
+	CircuitBreaker CBConfig      `mapstructure:"circuit_breaker"`
 }
 
 // ModelConfig 单个模型的配置
@@ -67,10 +69,23 @@ type RedisConfig struct {
 
 // MilvusConfig Milvus 向量数据库连接配置
 type MilvusConfig struct {
-	Addr           string `mapstructure:"addr"`
-	CollectionName string `mapstructure:"collection_name"`
-	Dimension      int    `mapstructure:"dimension"`
-	MetricType     string `mapstructure:"metric_type"` // L2 / IP / COSINE
+	Addr           string        `mapstructure:"addr"`
+	Username       string        `mapstructure:"username"`
+	Password       string        `mapstructure:"password"`
+	Database       string        `mapstructure:"database"`
+	CollectionName string        `mapstructure:"collection_name"`
+	Dimension      int           `mapstructure:"dimension"`
+	MetricType     string        `mapstructure:"metric_type"` // L2 / IP / COSINE
+	ConnectTimeout time.Duration `mapstructure:"connect_timeout"`
+}
+
+// EmbeddingConfig Ollama embedding 服务配置
+type EmbeddingConfig struct {
+	BaseURL   string        `mapstructure:"base_url"`
+	Model     string        `mapstructure:"model"`
+	Dimension int           `mapstructure:"dimension"`
+	BatchSize int           `mapstructure:"batch_size"`
+	Timeout   time.Duration `mapstructure:"timeout"`
 }
 
 // PostgresConfig PostgreSQL 数据库连接配置
@@ -85,18 +100,18 @@ type PostgresConfig struct {
 
 // AgentConfig Agent 编排器配置
 type AgentConfig struct {
-	MaxIterations   int           `mapstructure:"max_iterations"`   // ReAct 最大迭代次数
-	DefaultTimeout  time.Duration `mapstructure:"default_timeout"`  // 单次 Agent 执行超时
-	EnableReflection bool         `mapstructure:"enable_reflection"` // 是否启用反思机制
+	MaxIterations    int           `mapstructure:"max_iterations"`    // ReAct 最大迭代次数
+	DefaultTimeout   time.Duration `mapstructure:"default_timeout"`   // 单次 Agent 执行超时
+	EnableReflection bool          `mapstructure:"enable_reflection"` // 是否启用反思机制
 }
 
 // RAGConfig 检索增强生成配置
 type RAGConfig struct {
-	TopK           int     `mapstructure:"top_k"`            // 检索返回的文档数量
-	ScoreThreshold float64 `mapstructure:"score_threshold"`  // 相似度阈值
-	ChunkSize      int     `mapstructure:"chunk_size"`       // 文档分块大小
-	ChunkOverlap   int     `mapstructure:"chunk_overlap"`    // 分块重叠长度
-	EnableRerank   bool    `mapstructure:"enable_rerank"`    // 是否启用重排序
+	TopK           int     `mapstructure:"top_k"`           // 检索返回的文档数量
+	ScoreThreshold float64 `mapstructure:"score_threshold"` // 相似度阈值
+	ChunkSize      int     `mapstructure:"chunk_size"`      // 文档分块大小
+	ChunkOverlap   int     `mapstructure:"chunk_overlap"`   // 分块重叠长度
+	EnableRerank   bool    `mapstructure:"enable_rerank"`   // 是否启用重排序
 }
 
 // LogConfig 日志配置
@@ -150,7 +165,36 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("解析配置失败: %w", err)
 	}
 
+	// 数组类型的 models 很难只通过环境变量表达。开发和容器部署可使用
+	// APP_LLM_BASE_URL 等变量快速配置一个 OpenAI-compatible 模型；完整的
+	// 多模型路由仍使用 YAML 中的 llm.models。
+	applySingleModelEnv(cfg)
+
 	return cfg, nil
+}
+
+func applySingleModelEnv(cfg *Config) {
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("APP_LLM_BASE_URL")), "/")
+	if baseURL == "" || len(cfg.LLM.Models) > 0 {
+		return
+	}
+	modelName := envOrDefault("APP_LLM_MODEL", "qwen2.5:7b")
+	clientName := envOrDefault("APP_LLM_NAME", "default")
+	cfg.LLM.Models = []ModelConfig{{
+		Name:     clientName,
+		Provider: envOrDefault("APP_LLM_PROVIDER", "openai-compatible"),
+		APIKey:   os.Getenv("APP_LLM_API_KEY"),
+		BaseURL:  baseURL,
+		Model:    modelName,
+	}}
+	cfg.LLM.DefaultModel = clientName
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 // setDefaults 设置所有配置项的默认值
@@ -177,9 +221,20 @@ func setDefaults(v *viper.Viper) {
 
 	// Milvus 默认配置
 	v.SetDefault("milvus.addr", "localhost:19530")
+	v.SetDefault("milvus.username", "")
+	v.SetDefault("milvus.password", "")
+	v.SetDefault("milvus.database", "default")
 	v.SetDefault("milvus.collection_name", "documents")
 	v.SetDefault("milvus.dimension", 1536)
 	v.SetDefault("milvus.metric_type", "COSINE")
+	v.SetDefault("milvus.connect_timeout", "30s")
+
+	// Ollama embedding 默认配置（bge-m3 输出 1024 维向量）
+	v.SetDefault("embedding.base_url", "http://localhost:11434")
+	v.SetDefault("embedding.model", "bge-m3:latest")
+	v.SetDefault("embedding.dimension", 1024)
+	v.SetDefault("embedding.batch_size", 32)
+	v.SetDefault("embedding.timeout", "60s")
 
 	// PostgreSQL 默认配置
 	v.SetDefault("postgres.host", "localhost")

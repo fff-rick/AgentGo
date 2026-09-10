@@ -19,6 +19,8 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/agent"
 	"github.com/enterprise/ai-agent-go/internal/cache"
 	"github.com/enterprise/ai-agent-go/internal/config"
+	"github.com/enterprise/ai-agent-go/internal/embedding"
+	"github.com/enterprise/ai-agent-go/internal/etl"
 	"github.com/enterprise/ai-agent-go/internal/handler"
 	"github.com/enterprise/ai-agent-go/internal/intent"
 	"github.com/enterprise/ai-agent-go/internal/llm"
@@ -65,6 +67,15 @@ func main() {
 		logger.Fatal("初始化 Milvus 失败", zap.Error(err))
 	}
 	defer milvusClient.Close()
+	if cfg.Embedding.Dimension != cfg.Milvus.Dimension {
+		logger.Fatal("Embedding 与 Milvus 向量维度不一致",
+			zap.Int("embedding_dimension", cfg.Embedding.Dimension),
+			zap.Int("milvus_dimension", cfg.Milvus.Dimension))
+	}
+	embeddingClient, err := embedding.NewOllamaClient(cfg.Embedding)
+	if err != nil {
+		logger.Fatal("初始化 Ollama embedding 失败", zap.Error(err))
+	}
 
 	// 链路追踪
 	tp, err := trace.InitTracer("ai-agent-go")
@@ -86,7 +97,7 @@ func main() {
 
 	// 记忆管理器
 	shortTermMem := memory.NewShortTermMemory(redisCache, 20)
-	longTermMem := memory.NewLongTermMemory(milvusClient)
+	longTermMem := memory.NewLongTermMemory(milvusClient, embeddingClient)
 	memManager := memory.NewManager(shortTermMem, longTermMem)
 
 	// 工具系统
@@ -98,7 +109,7 @@ func main() {
 	intentRecognizer := intent.NewRecognizer(modelRouter, logger)
 
 	// RAG 引擎
-	retriever := rag.NewRetriever(milvusClient, redisCache, logger)
+	retriever := rag.NewRetriever(milvusClient, embeddingClient, redisCache, logger)
 	reranker := rag.NewReranker(modelRouter, logger)
 	generator := rag.NewGenerator(modelRouter, logger)
 
@@ -117,7 +128,8 @@ func main() {
 
 	// ======================== 6. 初始化 HTTP 处理器 ========================
 	chatHandler := handler.NewChatHandler(orchestrator, memManager, logger)
-	docHandler := handler.NewDocumentHandler(logger)
+	etlPipeline := etl.NewPipeline(etl.NewDefaultParser(), etl.NewChunker(cfg.RAG.ChunkSize, cfg.RAG.ChunkOverlap), milvusClient, embeddingClient, logger)
+	docHandler := handler.NewDocumentHandler(etlPipeline, logger)
 	healthHandler := handler.NewHealthHandler(redisCache, milvusClient)
 
 	// ======================== 7. 配置路由并启动服务器 ========================

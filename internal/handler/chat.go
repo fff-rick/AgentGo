@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -15,6 +14,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/agent"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/observe"
 	"github.com/enterprise/ai-agent-go/pkg/common"
 )
 
@@ -97,64 +97,30 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 	}
 
 	// 发送会话 ID
-	h.writeSSE(c.Writer, "session", fmt.Sprintf(`{"session_id":"%s"}`, req.SessionID))
+	h.writeSSE(c.Writer, "session", map[string]string{"session_id": req.SessionID})
 	flusher.Flush()
 
-	// 调用编排器处理（此处简化为同步调用后模拟流式输出）
-	// 实际生产中应使用真正的流式 LLM 调用
-	resp, err := h.orchestrator.ProcessMessage(ctx, &req)
+	ctx = observe.WithEmitter(ctx, func(event observe.Event) {
+		h.writeSSE(c.Writer, event.Type, event)
+		flusher.Flush()
+	})
+	_, err := h.orchestrator.ProcessMessage(ctx, &req)
 	if err != nil {
-		h.writeSSE(c.Writer, "error", fmt.Sprintf(`{"error":"%s"}`, err.Error()))
+		h.writeSSE(c.Writer, "error", map[string]string{"error": err.Error()})
 		flusher.Flush()
 		return
 	}
 
-	// 模拟流式输出：将完整回答按句子拆分逐步发送
-	runes := []rune(resp.Content)
-	chunkSize := 20 // 每次发送的字符数
-	for i := 0; i < len(runes); i += chunkSize {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		end := i + chunkSize
-		if end > len(runes) {
-			end = len(runes)
-		}
-
-		chunk := model.StreamChunk{
-			Event: "message",
-			Data:  string(runes[i:end]),
-		}
-		data, _ := json.Marshal(chunk)
-		h.writeSSE(c.Writer, "message", string(data))
-		flusher.Flush()
-
-		time.Sleep(50 * time.Millisecond) // 模拟打字效果
-	}
-
-	// 发送工具调用信息
-	if len(resp.ToolCalls) > 0 {
-		toolData, _ := json.Marshal(resp.ToolCalls)
-		h.writeSSE(c.Writer, "tool_calls", string(toolData))
-		flusher.Flush()
-	}
-
-	// 发送引用信息
-	if len(resp.References) > 0 {
-		refData, _ := json.Marshal(resp.References)
-		h.writeSSE(c.Writer, "references", string(refData))
-		flusher.Flush()
-	}
-
 	// 发送完成事件
-	h.writeSSE(c.Writer, "done", `{"status":"completed"}`)
+	h.writeSSE(c.Writer, "done", map[string]string{"status": "completed"})
 	flusher.Flush()
 }
 
 // writeSSE 写入一条 SSE 事件
-func (h *ChatHandler) writeSSE(w io.Writer, event, data string) {
+func (h *ChatHandler) writeSSE(w io.Writer, event string, value any) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		data = []byte(`{"error":"serialize stream event failed"}`)
+	}
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 }
