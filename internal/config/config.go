@@ -224,8 +224,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("milvus.username", "")
 	v.SetDefault("milvus.password", "")
 	v.SetDefault("milvus.database", "default")
-	v.SetDefault("milvus.collection_name", "documents")
-	v.SetDefault("milvus.dimension", 1536)
+	v.SetDefault("milvus.collection_name", "documents_bge_m3")
+	v.SetDefault("milvus.dimension", 1024)
 	v.SetDefault("milvus.metric_type", "COSINE")
 	v.SetDefault("milvus.connect_timeout", "30s")
 
@@ -251,7 +251,7 @@ func setDefaults(v *viper.Viper) {
 
 	// RAG 默认配置
 	v.SetDefault("rag.top_k", 5)
-	v.SetDefault("rag.score_threshold", 0.7)
+	v.SetDefault("rag.score_threshold", 0.5)
 	v.SetDefault("rag.chunk_size", 512)
 	v.SetDefault("rag.chunk_overlap", 64)
 	v.SetDefault("rag.enable_rerank", true)

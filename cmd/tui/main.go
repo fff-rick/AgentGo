@@ -12,9 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
 
 	"github.com/enterprise/ai-agent-go/internal/observe"
@@ -25,17 +27,27 @@ type streamEvent struct {
 	data []byte
 }
 type streamClosed struct{}
+type spinnerTickMsg time.Time
 
 type model struct {
-	baseURL string
-	session string
-	input   string
-	logs    []string
-	width   int
-	height  int
-	busy    bool
-	events  <-chan streamEvent
-	cancel  context.CancelFunc
+	baseURL            string
+	session            string
+	input              string
+	logs               []string
+	width              int
+	height             int
+	busy               bool
+	events             <-chan streamEvent
+	cancel             context.CancelFunc
+	scrollOffset       int
+	spinnerFrame       int
+	startedAt          time.Time
+	answerIndex        int
+	answerText         string
+	answerStreaming    bool
+	reasoningIndex     int
+	reasoningText      string
+	reasoningStreaming bool
 }
 
 var (
@@ -46,6 +58,7 @@ var (
 	toolStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
 	answerStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	spinnerFrames  = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 )
 
 func main() {
@@ -54,7 +67,7 @@ func main() {
 		baseURL = "http://localhost:8080"
 	}
 	m := &model{baseURL: baseURL, session: uuid.NewString()}
-	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
+	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -66,6 +79,7 @@ func (m *model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.scrollOffset = min(m.scrollOffset, m.maxScrollOffset())
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "/quit":
@@ -80,6 +94,18 @@ func (m *model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.busy {
 				return m.submit()
 			}
+		case "up":
+			m.scrollBy(1)
+		case "down":
+			m.scrollBy(-1)
+		case "pgup":
+			m.scrollBy(max(1, m.viewportHeight()-1))
+		case "pgdown":
+			m.scrollBy(-max(1, m.viewportHeight()-1))
+		case "home":
+			m.scrollOffset = m.maxScrollOffset()
+		case "end":
+			m.scrollOffset = 0
 		case "backspace":
 			if !m.busy && m.input != "" {
 				runes := []rune(m.input)
@@ -90,13 +116,32 @@ func (m *model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.input += string(msg.Runes)
 			}
 		}
+	case tea.MouseMsg:
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.scrollBy(3)
+		case tea.MouseButtonWheelDown:
+			m.scrollBy(-3)
+		}
+	case spinnerTickMsg:
+		if m.busy {
+			m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
+			return m, tickSpinner()
+		}
 	case streamEvent:
+		oldLineCount := len(m.historyLines())
 		m.renderEvent(msg)
+		if m.scrollOffset > 0 {
+			m.scrollOffset += max(0, len(m.historyLines())-oldLineCount)
+			m.scrollOffset = min(m.scrollOffset, m.maxScrollOffset())
+		}
 		return m, waitEvent(m.events)
 	case streamClosed:
 		m.busy = false
 		m.events = nil
 		m.cancel = nil
+		m.answerStreaming = false
+		m.reasoningStreaming = false
 	}
 	return m, nil
 }
@@ -121,16 +166,25 @@ func (m *model) submit() (tea.Model, tea.Cmd) {
 		m.logs = append(m.logs, userStyle.Render("导入: ")+path)
 		ctx, cancel := context.WithCancel(context.Background())
 		events := make(chan streamEvent, 8)
-		m.cancel, m.events, m.busy = cancel, events, true
+		m.beginRequest(cancel, events)
 		go importMarkdown(ctx, m.baseURL, path, events)
-		return m, waitEvent(events)
+		return m, tea.Batch(waitEvent(events), tickSpinner())
 	}
 	m.logs = append(m.logs, userStyle.Render("你: ")+query)
 	ctx, cancel := context.WithCancel(context.Background())
 	events := make(chan streamEvent, 32)
-	m.cancel, m.events, m.busy = cancel, events, true
+	m.beginRequest(cancel, events)
 	go stream(ctx, m.baseURL, m.session, query, events)
-	return m, waitEvent(events)
+	return m, tea.Batch(waitEvent(events), tickSpinner())
+}
+
+func (m *model) beginRequest(cancel context.CancelFunc, events <-chan streamEvent) {
+	m.cancel, m.events, m.busy = cancel, events, true
+	m.startedAt = time.Now()
+	m.spinnerFrame = 0
+	m.scrollOffset = 0
+	m.answerText, m.reasoningText = "", ""
+	m.answerStreaming, m.reasoningStreaming = false, false
 }
 
 func (m *model) stop() {
@@ -149,6 +203,10 @@ func waitEvent(events <-chan streamEvent) tea.Cmd {
 		}
 		return event
 	}
+}
+
+func tickSpinner() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg(t) })
 }
 
 func (m *model) renderEvent(raw streamEvent) {
@@ -173,6 +231,16 @@ func (m *model) renderEvent(raw streamEvent) {
 		m.logs = append(m.logs, statusStyle.Render(fmt.Sprintf("◆ 意图: %s (%.0f%%)", event.Intent, event.Confidence*100)))
 	case observe.TypeReasoning:
 		m.logs = append(m.logs, reasoningStyle.Render("推理: ")+event.Message)
+	case observe.TypeReasoningDelta:
+		m.reasoningText += event.Message
+		line := reasoningStyle.Render("推理: ") + m.reasoningText
+		if !m.reasoningStreaming {
+			m.reasoningIndex = len(m.logs)
+			m.logs = append(m.logs, line)
+			m.reasoningStreaming = true
+		} else {
+			m.logs[m.reasoningIndex] = line
+		}
 	case observe.TypeToolCall:
 		if event.Tool != nil {
 			m.logs = append(m.logs, toolStyle.Render("工具调用: "+event.Tool.ToolName+"("+event.Tool.Input+")"))
@@ -187,30 +255,84 @@ func (m *model) renderEvent(raw streamEvent) {
 			m.logs = append(m.logs, statusStyle.Render(fmt.Sprintf("  - %s [%s] score=%.4f", ref.Title, ref.DocID, ref.Score)))
 		}
 	case observe.TypeAnswer:
-		m.logs = append(m.logs, answerStyle.Render("回答: ")+event.Message)
+		line := answerStyle.Render("回答: ") + event.Message
+		if m.answerStreaming {
+			m.logs[m.answerIndex] = line
+			m.answerText = event.Message
+		} else {
+			m.logs = append(m.logs, line)
+		}
+	case observe.TypeAnswerDelta:
+		m.answerText += event.Message
+		line := answerStyle.Render("回答: ") + m.answerText
+		if !m.answerStreaming {
+			m.answerIndex = len(m.logs)
+			m.logs = append(m.logs, line)
+			m.answerStreaming = true
+		} else {
+			m.logs[m.answerIndex] = line
+		}
 	}
 }
 
 func (m *model) View() string {
 	var b strings.Builder
+	width := m.viewWidth()
 	b.WriteString(titleStyle.Render("AgentGo · 可观察 TUI"))
 	b.WriteString("\n")
-	b.WriteString(statusStyle.Render("服务: " + m.baseURL + "  会话: " + m.session))
-	b.WriteString("\n" + strings.Repeat("─", max(24, min(m.width, 80))) + "\n")
-	start := 0
-	visible := max(4, m.height-8)
-	if len(m.logs) > visible {
-		start = len(m.logs) - visible
-	}
-	b.WriteString(strings.Join(m.logs[start:], "\n\n"))
+	b.WriteString(ansi.Truncate(statusStyle.Render("服务: "+m.baseURL+"  会话: "+m.session), width, "…"))
+	b.WriteString("\n" + strings.Repeat("─", min(width, 80)) + "\n")
+	lines := m.historyLines()
+	visible := m.viewportHeight()
+	end := max(0, len(lines)-m.scrollOffset)
+	start := max(0, end-visible)
+	b.WriteString(strings.Join(lines[start:end], "\n"))
 	b.WriteString("\n\n")
 	if m.busy {
-		b.WriteString(statusStyle.Render("Agent 运行中… Esc 取消"))
+		elapsed := time.Since(m.startedAt).Round(time.Second)
+		b.WriteString(statusStyle.Render(fmt.Sprintf("%s Agent 运行中 · %s · Esc 取消", spinnerFrames[m.spinnerFrame], elapsed)))
 	} else {
 		b.WriteString(userStyle.Render("> ") + m.input)
 	}
-	b.WriteString("\n" + statusStyle.Render("Enter 发送 · /import <file.md> 导入 · /clear 清空 · Ctrl+C 退出"))
+	scrollHint := ""
+	if m.scrollOffset > 0 {
+		scrollHint = fmt.Sprintf(" · 距最新 %d 行", m.scrollOffset)
+	}
+	help := statusStyle.Render("Enter 发送 · ↑↓/PgUp/PgDn/鼠标滚轮 查看历史" + scrollHint + " · /import 导入 · /clear 清空 · Ctrl+C 退出")
+	b.WriteString("\n" + ansi.Truncate(help, width, "…"))
 	return b.String()
+}
+
+func (m *model) viewportHeight() int {
+	return max(3, m.height-7)
+}
+
+func (m *model) historyLines() []string {
+	width := m.viewWidth()
+	lines := make([]string, 0, len(m.logs)*2)
+	for i, log := range m.logs {
+		wrapped := ansi.Hardwrap(log, width, false)
+		lines = append(lines, strings.Split(wrapped, "\n")...)
+		if i < len(m.logs)-1 {
+			lines = append(lines, "")
+		}
+	}
+	return lines
+}
+
+func (m *model) viewWidth() int {
+	if m.width <= 0 {
+		return 80
+	}
+	return max(10, m.width)
+}
+
+func (m *model) maxScrollOffset() int {
+	return max(0, len(m.historyLines())-m.viewportHeight())
+}
+
+func (m *model) scrollBy(delta int) {
+	m.scrollOffset = max(0, min(m.maxScrollOffset(), m.scrollOffset+delta))
 }
 
 func stream(ctx context.Context, baseURL, session, query string, events chan<- streamEvent) {

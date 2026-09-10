@@ -102,7 +102,7 @@ TUI 会实时分类展示意图识别、执行阶段、ReAct 显式 Thought、�
 /import "~/docs/path with spaces.md"
 ```
 
-文件限制为 UTF-8 编码、`.md`/`.markdown` 后缀且不超过 10 MiB。`Esc` 可取消当前请求或导入，`/clear` 创建新会话，`Ctrl+C` 退出。也可直接观察 SSE 事件：
+文件限制为 UTF-8 编码、`.md`/`.markdown` 后缀且不超过 10 MiB。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/clear` 创建新会话，`Ctrl+C` 退出。也可直接观察 SSE 事件：
 
 ```bash
 curl -N http://localhost:8080/api/v1/chat/stream \
@@ -151,6 +151,8 @@ APP_LLM_MODEL=qwen2.5:7b make run
 | `APP_EMBEDDING_BASE_URL` | `http://host.docker.internal:11434` | Ollama 原生 API 根地址 |
 | `APP_EMBEDDING_MODEL` | `bge-m3:latest` | embedding 模型 |
 | `APP_EMBEDDING_DIMENSION` | `1024` | embedding 输出维度 |
+| `APP_RAG_SCORE_THRESHOLD` | `0.5` | 最低相关性分数（0–1），低于该值的片段不会进入回答上下文 |
+| `APP_RAG_ENABLE_RERANK` | `true` | 是否使用 LLM 对向量召回结果重排 |
 | `APP_SERVER_WRITE_TIMEOUT` | `300s` | 本地模型完整请求的写超时 |
 | `APP_AGENT_ENABLE_REFLECTION` | `false` | 是否额外调用一次模型反思答案 |
 

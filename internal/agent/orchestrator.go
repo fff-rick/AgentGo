@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -29,6 +30,7 @@ type OrchestratorDeps struct {
 	Reranker         *rag.Reranker
 	Generator        *rag.Generator
 	Config           config.AgentConfig
+	RAGConfig        config.RAGConfig
 	Logger           *zap.Logger
 }
 
@@ -171,20 +173,34 @@ func (o *Orchestrator) handleChat(ctx context.Context, message string, history [
 	})
 
 	req := &model.LLMRequest{Messages: messages}
-	resp, err := o.deps.ModelRouter.Chat(ctx, req)
+	stream, err := o.deps.ModelRouter.ChatStream(ctx, req)
 	if err != nil {
 		return "", err
 	}
-	if resp.Reasoning != "" {
-		observe.Emit(ctx, observe.Event{Type: observe.TypeReasoning, Stage: "model", Message: resp.Reasoning})
+	var answer strings.Builder
+	for event := range stream {
+		if event.Err != nil {
+			return "", event.Err
+		}
+		if event.Reasoning != "" {
+			observe.Emit(ctx, observe.Event{Type: observe.TypeReasoningDelta, Stage: "model", Message: event.Reasoning})
+		}
+		if event.Content != "" {
+			answer.WriteString(event.Content)
+			observe.Emit(ctx, observe.Event{Type: observe.TypeAnswerDelta, Stage: "answer", Message: event.Content})
+		}
 	}
-	return resp.Content, nil
+	return answer.String(), nil
 }
 
 // handleRAGQuery 处理知识库查询：检索 → 重排 → 生成
 func (o *Orchestrator) handleRAGQuery(ctx context.Context, query string, history []model.LLMMessage) (string, []model.Reference, error) {
 	// 检索
-	refs, err := o.deps.Retriever.Retrieve(ctx, query, 5)
+	topK := o.deps.RAGConfig.TopK
+	if topK <= 0 {
+		topK = 5
+	}
+	refs, err := o.deps.Retriever.Retrieve(ctx, query, topK)
 	if err != nil {
 		o.deps.Logger.Warn("RAG 检索失败，降级为直接回答", zap.Error(err))
 		answer, chatErr := o.handleChat(ctx, query, history)
@@ -192,7 +208,12 @@ func (o *Orchestrator) handleRAGQuery(ctx context.Context, query string, history
 	}
 
 	// 重排序
-	refs, _ = o.deps.Reranker.Rerank(ctx, query, refs)
+	if o.deps.RAGConfig.EnableRerank {
+		refs, _ = o.deps.Reranker.Rerank(ctx, query, refs)
+	}
+	if len(refs) == 0 {
+		observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "rag", Message: "未找到达到相关性阈值的知识库内容"})
+	}
 
 	// 生成答案
 	answer, err := o.deps.Generator.Generate(ctx, query, refs)

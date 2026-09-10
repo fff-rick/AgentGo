@@ -9,13 +9,15 @@ import (
 )
 
 const (
-	TypeStatus     = "status"
-	TypeIntent     = "intent"
-	TypeReasoning  = "reasoning"
-	TypeToolCall   = "tool_call"
-	TypeToolResult = "tool_result"
-	TypeReferences = "references"
-	TypeAnswer     = "answer"
+	TypeStatus         = "status"
+	TypeIntent         = "intent"
+	TypeReasoning      = "reasoning"
+	TypeReasoningDelta = "reasoning_delta"
+	TypeToolCall       = "tool_call"
+	TypeToolResult     = "tool_result"
+	TypeReferences     = "references"
+	TypeAnswer         = "answer"
+	TypeAnswerDelta    = "answer_delta"
 )
 
 // Event is a safe, user-visible description of Agent execution.
