@@ -21,6 +21,7 @@ type Config struct {
 	Postgres  PostgresConfig  `mapstructure:"postgres"`
 	Agent     AgentConfig     `mapstructure:"agent"`
 	RAG       RAGConfig       `mapstructure:"rag"`
+	Search    SearchConfig    `mapstructure:"search"`
 	Log       LogConfig       `mapstructure:"log"`
 }
 
@@ -112,6 +113,14 @@ type RAGConfig struct {
 	ChunkSize      int     `mapstructure:"chunk_size"`      // 文档分块大小
 	ChunkOverlap   int     `mapstructure:"chunk_overlap"`   // 分块重叠长度
 	EnableRerank   bool    `mapstructure:"enable_rerank"`   // 是否启用重排序
+}
+
+// SearchConfig SearXNG 搜索服务配置
+type SearchConfig struct {
+	BaseURL    string        `mapstructure:"base_url"`
+	Timeout    time.Duration `mapstructure:"timeout"`
+	Language   string        `mapstructure:"language"`
+	SafeSearch int           `mapstructure:"safe_search"`
 }
 
 // LogConfig 日志配置
@@ -255,6 +264,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("rag.chunk_size", 512)
 	v.SetDefault("rag.chunk_overlap", 64)
 	v.SetDefault("rag.enable_rerank", true)
+
+	// SearXNG 搜索配置
+	v.SetDefault("search.base_url", "http://localhost:8888")
+	v.SetDefault("search.timeout", "20s")
+	v.SetDefault("search.language", "zh-CN")
+	v.SetDefault("search.safe_search", 1)
 
 	// 日志默认配置
 	v.SetDefault("log.level", "info")

@@ -1,0 +1,21 @@
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: AgentGo Search
+
+search:
+  safe_search: 1
+  default_lang: zh-CN
+  formats:
+    - html
+    - json
+
+server:
+  limiter: false
+  image_proxy: false
+  secret_key: agentgo-local-search-change-me
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 20.0

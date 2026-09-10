@@ -104,7 +104,7 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 	case intent.IntentRAGQuery:
 		answer, references, err = o.handleRAGQuery(ctx, req.Message, history)
 	case intent.IntentToolUse:
-		answer, toolCalls, err = o.handleToolUse(ctx, req.Message, history)
+		answer, toolCalls, err = o.handleToolUse(ctx, req.Message, history, intentResult.RequiredTools)
 	case intent.IntentComplexTask:
 		answer, toolCalls, err = o.handleComplexTask(ctx, req.Message, history)
 	default:
@@ -221,8 +221,8 @@ func (o *Orchestrator) handleRAGQuery(ctx context.Context, query string, history
 }
 
 // handleToolUse 处理工具调用：使用 ReAct Agent 进行推理和工具调用
-func (o *Orchestrator) handleToolUse(ctx context.Context, message string, history []model.LLMMessage) (string, []model.ToolCallInfo, error) {
-	result, err := o.reactAgent.Run(ctx, message, history)
+func (o *Orchestrator) handleToolUse(ctx context.Context, message string, history []model.LLMMessage, requiredTools []string) (string, []model.ToolCallInfo, error) {
+	result, err := o.reactAgent.RunWithRequiredTools(ctx, message, history, requiredTools)
 	if err != nil {
 		return "", nil, fmt.Errorf("ReAct Agent 执行失败: %w", err)
 	}
@@ -235,7 +235,7 @@ func (o *Orchestrator) handleComplexTask(ctx context.Context, message string, hi
 	if err != nil {
 		// 降级到 ReAct
 		o.deps.Logger.Warn("规划执行失败，降级到 ReAct", zap.Error(err))
-		return o.handleToolUse(ctx, message, history)
+		return o.handleToolUse(ctx, message, history, nil)
 	}
 	return result.Answer, result.ToolCalls, nil
 }

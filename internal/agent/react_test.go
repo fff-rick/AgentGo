@@ -118,6 +118,63 @@ Final Answer: 已按协议完成。`,
 	}
 }
 
+func TestReActRejectsFinalAnswerBeforeToolExecution(t *testing.T) {
+	client := &sequenceLLMClient{responses: []string{
+		`Thought: 我可以直接回答。
+Final Answer: 成都今天晴。`,
+		`Thought: 必须先查询。
+Action: {"tool":"web_search","input":{"query":"成都今日天气"}}`,
+		`Thought: 已完成查询。
+Final Answer: 成都今天晴，气温 25°C。`,
+	}}
+	modelRouter := llm.NewRouter(map[string]llm.Client{"sequence": client}, "sequence", config.CBConfig{
+		FailureThreshold: 3,
+		SuccessThreshold: 1,
+	})
+	registry := tool.NewRegistry()
+	search := &recordingTool{}
+	registry.MustRegister(search)
+	agent := NewReActAgent(modelRouter, tool.NewRouter(registry, zap.NewNop()), 4, zap.NewNop())
+
+	result, err := agent.Run(context.Background(), "今天成都天气？", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.next != 3 || len(result.ToolCalls) != 1 || result.Answer != "成都今天晴，气温 25°C。" {
+		t.Fatalf("calls=%d tool_calls=%d answer=%q", client.next, len(result.ToolCalls), result.Answer)
+	}
+}
+
+func TestReActExecutesRequiredSearchBeforeFirstModelCall(t *testing.T) {
+	client := &sequenceLLMClient{responses: []string{
+		`Thought: 已获得搜索结果。
+Final Answer: 成都今天晴，气温 25°C。`,
+	}}
+	modelRouter := llm.NewRouter(map[string]llm.Client{"sequence": client}, "sequence", config.CBConfig{
+		FailureThreshold: 3,
+		SuccessThreshold: 1,
+	})
+	registry := tool.NewRegistry()
+	search := &recordingTool{}
+	registry.MustRegister(search)
+	agent := NewReActAgent(modelRouter, tool.NewRouter(registry, zap.NewNop()), 3, zap.NewNop())
+
+	result, err := agent.RunWithRequiredTools(context.Background(), "今天成都天气？", nil, []string{"web_search"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.next != 1 || len(result.ToolCalls) != 1 || result.Answer != "成都今天晴，气温 25°C。" {
+		t.Fatalf("calls=%d tool_calls=%d answer=%q", client.next, len(result.ToolCalls), result.Answer)
+	}
+	var input map[string]interface{}
+	if err := json.Unmarshal([]byte(search.input), &input); err != nil || !strings.Contains(input["query"].(string), "今天成都天气？ 天气预报") {
+		t.Fatalf("required tool input=%q parsed=%+v err=%v", search.input, input, err)
+	}
+	if input["time_range"] != "day" {
+		t.Fatalf("required realtime search should use day range: %+v", input)
+	}
+}
+
 func TestParseActionAcceptsStringInputAndRejectsMalformedAction(t *testing.T) {
 	agent := &ReActAgent{logger: zap.NewNop()}
 	action, found, err := agent.parseAction(`Action: {"tool":"calculator","input":"{\"a\":1}"}`)
