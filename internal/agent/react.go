@@ -11,6 +11,7 @@ import (
 
 	"github.com/enterprise/ai-agent-go/internal/llm"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/observe"
 	"github.com/enterprise/ai-agent-go/internal/tool"
 )
 
@@ -83,6 +84,7 @@ func (a *ReActAgent) Run(ctx context.Context, query string, history []model.LLMM
 
 	// ReAct 迭代循环
 	for i := 0; i < a.maxIterations; i++ {
+		observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "react", Message: fmt.Sprintf("ReAct 第 %d/%d 轮", i+1, a.maxIterations)})
 		a.logger.Info("ReAct 迭代",
 			zap.Int("iteration", i+1),
 			zap.Int("max", a.maxIterations),
@@ -100,6 +102,9 @@ func (a *ReActAgent) Run(ctx context.Context, query string, history []model.LLMM
 		}
 
 		content := resp.Content
+		if thought := a.extractThought(content); thought != "" {
+			observe.Emit(ctx, observe.Event{Type: observe.TypeReasoning, Stage: "react", Message: thought})
+		}
 
 		// 检查是否已到达最终答案
 		if finalAnswer := a.extractFinalAnswer(content); finalAnswer != "" {
@@ -131,6 +136,7 @@ func (a *ReActAgent) Run(ctx context.Context, query string, history []model.LLMM
 		})
 
 		// 执行工具调用
+		observe.Emit(ctx, observe.Event{Type: observe.TypeToolCall, Stage: "tool", Tool: &model.ToolCallInfo{ToolName: action.Tool, Input: action.Input}})
 		startTime := time.Now()
 		toolResult, err := a.toolRouter.Execute(ctx, action.Tool, action.Input)
 		elapsed := time.Since(startTime)

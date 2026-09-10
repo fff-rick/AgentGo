@@ -1,6 +1,9 @@
 # ============ 构建阶段 ============
 FROM golang:1.22-alpine AS builder
 
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
+
 RUN apk add --no-cache git ca-certificates tzdata
 
 WORKDIR /app
@@ -23,7 +26,6 @@ ENV TZ=Asia/Shanghai
 WORKDIR /app
 
 COPY --from=builder /app/server .
-COPY --from=builder /app/config.yaml ./config.yaml
 
 EXPOSE 8080
 

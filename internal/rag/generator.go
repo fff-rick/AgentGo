@@ -9,6 +9,7 @@ import (
 
 	"github.com/enterprise/ai-agent-go/internal/llm"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/observe"
 )
 
 // Generator RAG 答案生成器。
@@ -62,6 +63,9 @@ func (g *Generator) Generate(ctx context.Context, query string, refs []model.Ref
 	if err != nil {
 		return "", fmt.Errorf("RAG 生成答案失败: %w", err)
 	}
+	if resp.Reasoning != "" {
+		observe.Emit(ctx, observe.Event{Type: observe.TypeReasoning, Stage: "rag_generation", Message: resp.Reasoning})
+	}
 
 	g.logger.Info("RAG 答案生成完成",
 		zap.Int("ref_count", len(refs)),
@@ -86,6 +90,9 @@ func (g *Generator) generateWithoutRefs(ctx context.Context, query string) (stri
 	resp, err := g.router.Chat(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("生成答案失败: %w", err)
+	}
+	if resp.Reasoning != "" {
+		observe.Emit(ctx, observe.Event{Type: observe.TypeReasoning, Stage: "rag_generation", Message: resp.Reasoning})
 	}
 
 	return resp.Content, nil

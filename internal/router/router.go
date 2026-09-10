@@ -31,6 +31,7 @@ func Register(engine *gin.Engine, chatH *handler.ChatHandler, docH *handler.Docu
 
 		// 文档接口
 		v1.POST("/documents", docH.Upload)
+		v1.POST("/documents/import", docH.ImportMarkdown)
 		v1.GET("/documents/:id", docH.GetStatus)
 	}
 }
