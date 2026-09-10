@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"go.uber.org/zap"
@@ -94,7 +95,17 @@ func (r *Router) BatchExecute(ctx context.Context, calls []ToolCall) []*ToolCall
 
 // ListAvailableTools 返回注册中心中所有可用工具的名称
 func (r *Router) ListAvailableTools() []string {
-	return r.registry.List()
+	names := r.registry.List()
+	sort.Strings(names)
+	return names
+}
+
+// ListAvailableToolDetails 返回按名称排序的工具定义，供 Agent 构造稳定且
+// 包含参数 Schema 的工具提示词。
+func (r *Router) ListAvailableToolDetails() []Tool {
+	tools := r.registry.ListTools()
+	sort.Slice(tools, func(i, j int) bool { return tools[i].Name() < tools[j].Name() })
+	return tools
 }
 
 // ToolCall 工具调用请求

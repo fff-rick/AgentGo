@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -120,11 +121,27 @@ func (a *ReActAgent) Run(ctx context.Context, query string, history []model.LLMM
 		}
 
 		// 解析 Action
-		action := a.extractAction(content)
-		if action == nil {
-			// 没有 Action 也没有 Final Answer，视为最终答案
-			result.Answer = content
-			return result, nil
+		action, actionFound, actionErr := a.parseAction(content)
+		if actionErr != nil {
+			a.logger.Warn("Action 格式错误，要求模型修正",
+				zap.Int("iteration", i+1),
+				zap.Error(actionErr),
+			)
+			observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "react", Message: "工具调用格式错误，正在要求模型修正"})
+			messages = append(messages,
+				model.LLMMessage{Role: "assistant", Content: content},
+				model.LLMMessage{Role: "user", Content: "你的 Action 无法解析：" + actionErr.Error() + "。请严格按 Action: {\"tool\":\"工具名\",\"input\":{...}} 格式重新输出。"},
+			)
+			continue
+		}
+		if !actionFound {
+			a.logger.Warn("ReAct 响应缺少 Action 或 Final Answer", zap.Int("iteration", i+1))
+			observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "react", Message: "模型未输出工具调用或最终答案，正在要求修正"})
+			messages = append(messages,
+				model.LLMMessage{Role: "assistant", Content: content},
+				model.LLMMessage{Role: "user", Content: "你的回复不符合 ReAct 协议。若需工具，输出 Action: {\"tool\":\"工具名\",\"input\":{...}}；若已完成，必须输出 Final Answer: <最终答案>。"},
+			)
+			continue
 		}
 
 		// 记录思考步骤
@@ -151,12 +168,14 @@ func (a *ReActAgent) Run(ctx context.Context, query string, history []model.LLMM
 		}
 
 		// 记录工具调用
-		result.ToolCalls = append(result.ToolCalls, model.ToolCallInfo{
+		callInfo := model.ToolCallInfo{
 			ToolName: action.Tool,
 			Input:    action.Input,
 			Output:   observation,
 			Duration: elapsed.Milliseconds(),
-		})
+		}
+		result.ToolCalls = append(result.ToolCalls, callInfo)
+		observe.Emit(ctx, observe.Event{Type: observe.TypeToolResult, Stage: "tool", Message: observation, Tool: &callInfo})
 		result.Steps = append(result.Steps, model.AgentStep{
 			StepIndex:  i + 1,
 			Type:       "action",
@@ -196,69 +215,65 @@ func (a *ReActAgent) Run(ctx context.Context, query string, history []model.LLMM
 
 // actionPayload Action 的 JSON 结构
 type actionPayload struct {
-	Tool  string `json:"tool"`
-	Input string `json:"input"`
+	Tool  string
+	Input string
 }
 
 // extractAction 从 LLM 响应中提取 Action（工具调用）
 func (a *ReActAgent) extractAction(content string) *actionPayload {
+	action, found, err := a.parseAction(content)
+	if err != nil {
+		a.logger.Warn("解析 Action JSON 失败", zap.Error(err))
+		return nil
+	}
+	if !found {
+		return nil
+	}
+	return action
+}
+
+// parseAction 区分“没有 Action”和“Action 格式错误”，防止格式错误时把
+// Thought/Action 协议文本误当作最终答案返回给用户。
+func (a *ReActAgent) parseAction(content string) (*actionPayload, bool, error) {
 	// 查找 "Action:" 后的 JSON
 	idx := strings.Index(content, "Action:")
 	if idx == -1 {
-		return nil
+		return nil, false, nil
 	}
 
 	actionStr := strings.TrimSpace(content[idx+len("Action:"):])
-
-	// 查找第一个 JSON 对象
 	start := strings.Index(actionStr, "{")
 	if start == -1 {
-		return nil
+		return nil, true, fmt.Errorf("Action 后缺少 JSON 对象")
 	}
 
-	// 简单的括号匹配找到完整 JSON
-	depth := 0
-	end := -1
-	for i := start; i < len(actionStr); i++ {
-		switch actionStr[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				end = i + 1
-				break
-			}
+	var raw struct {
+		Tool  string          `json:"tool"`
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.NewDecoder(strings.NewReader(actionStr[start:])).Decode(&raw); err != nil {
+		return nil, true, fmt.Errorf("解析 Action JSON: %w", err)
+	}
+	if strings.TrimSpace(raw.Tool) == "" {
+		return nil, true, fmt.Errorf("Action 缺少 tool")
+	}
+
+	input := strings.TrimSpace(string(raw.Input))
+	if input == "" || input == "null" {
+		input = "{}"
+	} else if raw.Input[0] == '"' {
+		if err := json.Unmarshal(raw.Input, &input); err != nil {
+			return nil, true, fmt.Errorf("解析 Action input 字符串: %w", err)
 		}
-		if end > 0 {
-			break
+	} else {
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, raw.Input); err != nil {
+			return nil, true, fmt.Errorf("解析 Action input: %w", err)
 		}
+		input = compact.String()
 	}
 
-	if end <= start {
-		return nil
-	}
-
-	jsonStr := actionStr[start:end]
-	var action actionPayload
-	if err := json.Unmarshal([]byte(jsonStr), &action); err != nil {
-		a.logger.Warn("解析 Action JSON 失败", zap.String("json", jsonStr), zap.Error(err))
-		return nil
-	}
-
-	// 如果 input 是对象，序列化为字符串
-	if action.Input == "" {
-		var raw map[string]interface{}
-		if err := json.Unmarshal([]byte(jsonStr), &raw); err == nil {
-			if inputObj, ok := raw["input"]; ok {
-				if inputBytes, err := json.Marshal(inputObj); err == nil {
-					action.Input = string(inputBytes)
-				}
-			}
-		}
-	}
-
-	return &action
+	return &actionPayload{Tool: raw.Tool, Input: input}, true, nil
 }
 
 // extractFinalAnswer 从 LLM 响应中提取最终答案
@@ -287,14 +302,19 @@ func (a *ReActAgent) extractThought(content string) string {
 
 // buildToolsDescription 构建工具描述文本，嵌入到系统 Prompt 中
 func (a *ReActAgent) buildToolsDescription() string {
-	tools := a.toolRouter.ListAvailableTools()
+	tools := a.toolRouter.ListAvailableToolDetails()
 	if len(tools) == 0 {
 		return "（无可用工具）"
 	}
 
 	var sb strings.Builder
-	for _, name := range tools {
-		sb.WriteString(fmt.Sprintf("- %s\n", name))
+	for _, availableTool := range tools {
+		parameters, err := json.Marshal(availableTool.Parameters())
+		if err != nil {
+			parameters = []byte(`{"type":"object"}`)
+		}
+		sb.WriteString(fmt.Sprintf("- %s: %s\n  input JSON Schema: %s\n",
+			availableTool.Name(), availableTool.Description(), parameters))
 	}
 	return sb.String()
 }

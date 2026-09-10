@@ -114,10 +114,6 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 	if err != nil {
 		return nil, err
 	}
-	for i := range toolCalls {
-		call := toolCalls[i]
-		observe.Emit(ctx, observe.Event{Type: observe.TypeToolResult, Stage: "tool", Message: call.Output, Tool: &call})
-	}
 	if len(references) > 0 {
 		observe.Emit(ctx, observe.Event{Type: observe.TypeReferences, Stage: "rag", Message: fmt.Sprintf("检索到 %d 条相关引用", len(references)), References: references})
 	}

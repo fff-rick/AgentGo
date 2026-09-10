@@ -11,6 +11,7 @@ import (
 
 	"github.com/enterprise/ai-agent-go/internal/llm"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/observe"
 	"github.com/enterprise/ai-agent-go/internal/tool"
 )
 
@@ -89,6 +90,7 @@ func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model
 		var output string
 		if step.Tool != "" {
 			// 需要使用工具
+			observe.Emit(ctx, observe.Event{Type: observe.TypeToolCall, Stage: "tool", Tool: &model.ToolCallInfo{ToolName: step.Tool, Input: step.Input}})
 			startTime := time.Now()
 			toolResult, err := p.toolRouter.Execute(ctx, step.Tool, step.Input)
 			elapsed := time.Since(startTime)
@@ -99,12 +101,14 @@ func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model
 				output = toolResult.Output
 			}
 
-			result.ToolCalls = append(result.ToolCalls, model.ToolCallInfo{
+			callInfo := model.ToolCallInfo{
 				ToolName: step.Tool,
 				Input:    step.Input,
 				Output:   output,
 				Duration: elapsed.Milliseconds(),
-			})
+			}
+			result.ToolCalls = append(result.ToolCalls, callInfo)
+			observe.Emit(ctx, observe.Event{Type: observe.TypeToolResult, Stage: "tool", Message: output, Tool: &callInfo})
 		} else {
 			output = step.Description
 		}
