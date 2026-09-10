@@ -31,25 +31,28 @@ const (
 // Retriever 多路检索引擎。
 // 支持向量检索、关键词检索和混合检索三种模式，通过 RRF 算法融合多路结果。
 type Retriever struct {
-	vectorDB vectordb.VectorDB
-	embedder embedding.Client
-	cache    cache.Cache
-	logger   *zap.Logger
+	vectorDB       vectordb.VectorDB
+	embedder       embedding.Client
+	cache          cache.Cache
+	scoreThreshold float64
+	logger         *zap.Logger
 }
 
 // NewRetriever 创建多路检索引擎
-func NewRetriever(vectorDB vectordb.VectorDB, embedder embedding.Client, cache cache.Cache, logger *zap.Logger) *Retriever {
+func NewRetriever(vectorDB vectordb.VectorDB, embedder embedding.Client, cache cache.Cache, scoreThreshold float64, logger *zap.Logger) *Retriever {
 	return &Retriever{
-		vectorDB: vectorDB,
-		embedder: embedder,
-		cache:    cache,
-		logger:   logger,
+		vectorDB:       vectorDB,
+		embedder:       embedder,
+		cache:          cache,
+		scoreThreshold: scoreThreshold,
+		logger:         logger,
 	}
 }
 
-// Retrieve 执行检索，默认使用混合检索模式
+// Retrieve 执行检索。关键词检索尚未接入前默认使用向量检索，避免空的
+// 关键词结果参与 RRF 后覆盖 Milvus 返回的原始相似度分数。
 func (r *Retriever) Retrieve(ctx context.Context, query string, topK int) ([]model.Reference, error) {
-	return r.RetrieveWithMode(ctx, query, topK, ModeHybrid)
+	return r.RetrieveWithMode(ctx, query, topK, ModeVector)
 }
 
 // RetrieveWithMode 使用指定模式执行检索
@@ -80,7 +83,14 @@ func (r *Retriever) vectorSearch(ctx context.Context, query string, topK int) ([
 	}
 
 	refs := make([]model.Reference, 0, len(results))
-	for _, result := range results {
+	var topScore float64
+	for i, result := range results {
+		if i == 0 || result.Score > topScore {
+			topScore = result.Score
+		}
+		if result.Score < r.scoreThreshold {
+			continue
+		}
 		docID := result.Metadata["doc_id"]
 		if docID == "" {
 			docID = result.ID
@@ -92,6 +102,12 @@ func (r *Retriever) vectorSearch(ctx context.Context, query string, topK int) ([
 			Score:   result.Score,
 		})
 	}
+	r.logger.Info("向量召回完成",
+		zap.Int("candidates", len(results)),
+		zap.Int("accepted", len(refs)),
+		zap.Float64("top_score", topScore),
+		zap.Float64("score_threshold", r.scoreThreshold),
+	)
 
 	return refs, nil
 }
@@ -143,6 +159,12 @@ func (r *Retriever) hybridSearch(ctx context.Context, query string, topK int) ([
 	if keywordErr != nil {
 		r.logger.Warn("混合检索中关键词检索失败，仅使用向量结果", zap.Error(keywordErr))
 	}
+	if len(keywordResults) == 0 {
+		return truncateReferences(vectorResults, topK), vectorErr
+	}
+	if len(vectorResults) == 0 {
+		return truncateReferences(keywordResults, topK), keywordErr
+	}
 
 	// 使用 RRF 算法融合两路结果
 	merged := r.reciprocalRankFusion(vectorResults, keywordResults)
@@ -153,6 +175,13 @@ func (r *Retriever) hybridSearch(ctx context.Context, query string, topK int) ([
 	}
 
 	return merged, nil
+}
+
+func truncateReferences(refs []model.Reference, topK int) []model.Reference {
+	if topK >= 0 && len(refs) > topK {
+		return refs[:topK]
+	}
+	return refs
 }
 
 // reciprocalRankFusion 倒数排名融合算法（RRF）。

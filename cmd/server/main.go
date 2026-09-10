@@ -109,8 +109,8 @@ func main() {
 	intentRecognizer := intent.NewRecognizer(modelRouter, logger)
 
 	// RAG 引擎
-	retriever := rag.NewRetriever(milvusClient, embeddingClient, redisCache, logger)
-	reranker := rag.NewReranker(modelRouter, logger)
+	retriever := rag.NewRetriever(milvusClient, embeddingClient, redisCache, cfg.RAG.ScoreThreshold, logger)
+	reranker := rag.NewReranker(modelRouter, cfg.RAG.ScoreThreshold, logger)
 	generator := rag.NewGenerator(modelRouter, logger)
 
 	// ======================== 5. 初始化 Agent 编排器 ========================
@@ -123,6 +123,7 @@ func main() {
 		Reranker:         reranker,
 		Generator:        generator,
 		Config:           cfg.Agent,
+		RAGConfig:        cfg.RAG,
 		Logger:           logger,
 	})
 

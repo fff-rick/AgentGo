@@ -151,6 +151,8 @@ APP_LLM_MODEL=qwen2.5:7b make run
 | `APP_EMBEDDING_BASE_URL` | `http://host.docker.internal:11434` | Ollama 原生 API 根地址 |
 | `APP_EMBEDDING_MODEL` | `bge-m3:latest` | embedding 模型 |
 | `APP_EMBEDDING_DIMENSION` | `1024` | embedding 输出维度 |
+| `APP_RAG_SCORE_THRESHOLD` | `0.5` | 最低相关性分数（0–1），低于该值的片段不会进入回答上下文 |
+| `APP_RAG_ENABLE_RERANK` | `true` | 是否使用 LLM 对向量召回结果重排 |
 | `APP_SERVER_WRITE_TIMEOUT` | `300s` | 本地模型完整请求的写超时 |
 | `APP_AGENT_ENABLE_REFLECTION` | `false` | 是否额外调用一次模型反思答案 |
 

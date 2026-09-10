@@ -15,15 +15,17 @@ import (
 // Reranker 重排序器。
 // 使用 LLM 对初检结果进行精排，提高 Top-K 结果的相关性。
 type Reranker struct {
-	router *llm.Router
-	logger *zap.Logger
+	router         *llm.Router
+	scoreThreshold float64
+	logger         *zap.Logger
 }
 
 // NewReranker 创建重排序器
-func NewReranker(router *llm.Router, logger *zap.Logger) *Reranker {
+func NewReranker(router *llm.Router, scoreThreshold float64, logger *zap.Logger) *Reranker {
 	return &Reranker{
-		router: router,
-		logger: logger,
+		router:         router,
+		scoreThreshold: scoreThreshold,
+		logger:         logger,
 	}
 }
 
@@ -35,6 +37,11 @@ const rerankPrompt = `请对以下文档片段与查询的相关性进行评分�
 %s
 
 请以 JSON 数组格式返回每个文档的分数：[{"index": 0, "score": 8.5}, ...]`
+
+type rerankScore struct {
+	Index int     `json:"index"`
+	Score float64 `json:"score"`
+}
 
 // Rerank 对检索结果进行重排序。
 // 将查询和所有候选文档一起发送给 LLM，由 LLM 评估相关性并重新排序。
@@ -70,26 +77,40 @@ func (r *Reranker) Rerank(ctx context.Context, query string, refs []model.Refere
 	}
 
 	// 解析 LLM 返回的评分
-	var scores []struct {
-		Index int     `json:"index"`
-		Score float64 `json:"score"`
-	}
+	var scores []rerankScore
 	if err := json.Unmarshal([]byte(resp.Content), &scores); err != nil {
 		r.logger.Warn("Rerank 结果解析失败，返回原始排序", zap.Error(err))
 		return refs, nil
 	}
 
-	// 更新分数并重排
-	for _, s := range scores {
-		if s.Index >= 0 && s.Index < len(refs) {
-			refs[s.Index].Score = s.Score
-		}
-	}
-
-	sort.Slice(refs, func(i, j int) bool {
-		return refs[i].Score > refs[j].Score
-	})
+	refs = applyRerankScores(refs, scores, r.scoreThreshold)
 
 	r.logger.Info("Rerank 完成", zap.Int("doc_count", len(refs)))
 	return refs, nil
+}
+
+func applyRerankScores(refs []model.Reference, scores []rerankScore, threshold float64) []model.Reference {
+	filtered := make([]model.Reference, 0, len(scores))
+	seen := make([]bool, len(refs))
+	for _, score := range scores {
+		if score.Index < 0 || score.Index >= len(refs) || seen[score.Index] {
+			continue
+		}
+		seen[score.Index] = true
+		normalized := score.Score / 10
+		if normalized < 0 {
+			normalized = 0
+		} else if normalized > 1 {
+			normalized = 1
+		}
+		if normalized >= threshold {
+			ref := refs[score.Index]
+			ref.Score = normalized
+			filtered = append(filtered, ref)
+		}
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Score > filtered[j].Score
+	})
+	return filtered
 }
