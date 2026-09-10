@@ -59,20 +59,17 @@ func (g *Generator) Generate(ctx context.Context, query string, refs []model.Ref
 		},
 	}
 
-	resp, err := g.router.Chat(ctx, req)
+	answer, err := g.generateStream(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("RAG 生成答案失败: %w", err)
-	}
-	if resp.Reasoning != "" {
-		observe.Emit(ctx, observe.Event{Type: observe.TypeReasoning, Stage: "rag_generation", Message: resp.Reasoning})
 	}
 
 	g.logger.Info("RAG 答案生成完成",
 		zap.Int("ref_count", len(refs)),
-		zap.Int("answer_len", len(resp.Content)),
+		zap.Int("answer_len", len(answer)),
 	)
 
-	return resp.Content, nil
+	return answer, nil
 }
 
 // generateWithoutRefs 在没有检索到相关文档时直接生成回答
@@ -87,13 +84,30 @@ func (g *Generator) generateWithoutRefs(ctx context.Context, query string) (stri
 		},
 	}
 
-	resp, err := g.router.Chat(ctx, req)
+	answer, err := g.generateStream(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("生成答案失败: %w", err)
 	}
-	if resp.Reasoning != "" {
-		observe.Emit(ctx, observe.Event{Type: observe.TypeReasoning, Stage: "rag_generation", Message: resp.Reasoning})
-	}
+	return answer, nil
+}
 
-	return resp.Content, nil
+func (g *Generator) generateStream(ctx context.Context, req *model.LLMRequest) (string, error) {
+	stream, err := g.router.ChatStream(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	var answer strings.Builder
+	for event := range stream {
+		if event.Err != nil {
+			return "", event.Err
+		}
+		if event.Reasoning != "" {
+			observe.Emit(ctx, observe.Event{Type: observe.TypeReasoningDelta, Stage: "rag_generation", Message: event.Reasoning})
+		}
+		if event.Content != "" {
+			answer.WriteString(event.Content)
+			observe.Emit(ctx, observe.Event{Type: observe.TypeAnswerDelta, Stage: "answer", Message: event.Content})
+		}
+	}
+	return answer.String(), nil
 }

@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -172,14 +173,24 @@ func (o *Orchestrator) handleChat(ctx context.Context, message string, history [
 	})
 
 	req := &model.LLMRequest{Messages: messages}
-	resp, err := o.deps.ModelRouter.Chat(ctx, req)
+	stream, err := o.deps.ModelRouter.ChatStream(ctx, req)
 	if err != nil {
 		return "", err
 	}
-	if resp.Reasoning != "" {
-		observe.Emit(ctx, observe.Event{Type: observe.TypeReasoning, Stage: "model", Message: resp.Reasoning})
+	var answer strings.Builder
+	for event := range stream {
+		if event.Err != nil {
+			return "", event.Err
+		}
+		if event.Reasoning != "" {
+			observe.Emit(ctx, observe.Event{Type: observe.TypeReasoningDelta, Stage: "model", Message: event.Reasoning})
+		}
+		if event.Content != "" {
+			answer.WriteString(event.Content)
+			observe.Emit(ctx, observe.Event{Type: observe.TypeAnswerDelta, Stage: "answer", Message: event.Content})
+		}
 	}
-	return resp.Content, nil
+	return answer.String(), nil
 }
 
 // handleRAGQuery 处理知识库查询：检索 → 重排 → 生成

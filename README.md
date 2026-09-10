@@ -102,7 +102,7 @@ TUI 会实时分类展示意图识别、执行阶段、ReAct 显式 Thought、�
 /import "~/docs/path with spaces.md"
 ```
 
-文件限制为 UTF-8 编码、`.md`/`.markdown` 后缀且不超过 10 MiB。`Esc` 可取消当前请求或导入，`/clear` 创建新会话，`Ctrl+C` 退出。也可直接观察 SSE 事件：
+文件限制为 UTF-8 编码、`.md`/`.markdown` 后缀且不超过 10 MiB。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/clear` 创建新会话，`Ctrl+C` 退出。也可直接观察 SSE 事件：
 
 ```bash
 curl -N http://localhost:8080/api/v1/chat/stream \
