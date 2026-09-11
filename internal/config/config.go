@@ -266,7 +266,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("rag.enable_rerank", true)
 
 	// SearXNG 搜索配置
-	v.SetDefault("search.base_url", "http://localhost:8888")
+	v.SetDefault("search.base_url", "http://localhost:7070")
 	v.SetDefault("search.timeout", "20s")
 	v.SetDefault("search.language", "zh-CN")
 	v.SetDefault("search.safe_search", 1)

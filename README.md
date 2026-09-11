@@ -153,7 +153,7 @@ APP_LLM_MODEL=qwen2.5:7b make run
 | `APP_EMBEDDING_DIMENSION` | `1024` | embedding 输出维度 |
 | `APP_RAG_SCORE_THRESHOLD` | `0.5` | 最低相关性分数（0–1），低于该值的片段不会进入回答上下文 |
 | `APP_RAG_ENABLE_RERANK` | `true` | 是否使用 LLM 对向量召回结果重排 |
-| `APP_SEARCH_BASE_URL` | `http://localhost:8888` | SearXNG 地址；Compose 内自动改为 `http://searxng:8080` |
+| `APP_SEARCH_BASE_URL` | `http://localhost:7070` | SearXNG 地址；Compose 内自动改为 `http://searxng:8080` |
 | `APP_SEARCH_TIMEOUT` | `20s` | 单次真实网络搜索超时 |
 | `APP_SEARCH_LANGUAGE` | `zh-CN` | 搜索结果语言 |
 | `APP_SEARCH_SAFE_SEARCH` | `1` | SearXNG 安全搜索级别：0 关闭、1 适中、2 严格 |
