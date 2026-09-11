@@ -56,7 +56,7 @@ services:
       - milvus-data:/var/lib/milvus
     ports:
       - "${MILVUS_PORT:-19530}:19530"
-      - "${MILVUS_WEBUI_PORT:-9091}:9091"
+      - "${MILVUS_WEBUI_PORT:-19121}:9091"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
       interval: 5s
@@ -73,12 +73,12 @@ services:
     image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
     environment:
       SEARXNG_SECRET: ${SEARXNG_SECRET:-agentgo-local-search-change-me}
-      SEARXNG_BASE_URL: http://localhost:${SEARXNG_PORT:-8888}/
+      SEARXNG_BASE_URL: http://localhost:${SEARXNG_PORT:-7070}/
     volumes:
       - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
       - searxng-cache:/var/cache/searxng
     ports:
-      - "${SEARXNG_PORT:-8888}:8080"
+      - "${SEARXNG_PORT:-7070}:8080"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ >/dev/null || exit 1"]
       interval: 5s
