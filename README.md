@@ -153,6 +153,10 @@ APP_LLM_MODEL=qwen2.5:7b make run
 | `APP_EMBEDDING_DIMENSION` | `1024` | embedding 输出维度 |
 | `APP_RAG_SCORE_THRESHOLD` | `0.5` | 最低相关性分数（0–1），低于该值的片段不会进入回答上下文 |
 | `APP_RAG_ENABLE_RERANK` | `true` | 是否使用 LLM 对向量召回结果重排 |
+| `APP_SEARCH_BASE_URL` | `http://localhost:8888` | SearXNG 地址；Compose 内自动改为 `http://searxng:8080` |
+| `APP_SEARCH_TIMEOUT` | `20s` | 单次真实网络搜索超时 |
+| `APP_SEARCH_LANGUAGE` | `zh-CN` | 搜索结果语言 |
+| `APP_SEARCH_SAFE_SEARCH` | `1` | SearXNG 安全搜索级别：0 关闭、1 适中、2 严格 |
 | `APP_SERVER_WRITE_TIMEOUT` | `300s` | 本地模型完整请求的写超时 |
 | `APP_AGENT_ENABLE_REFLECTION` | `false` | 是否额外调用一次模型反思答案 |
 
@@ -168,8 +172,14 @@ make test-milvus
 # 仅构建本地镜像 ai-agent-go:local
 make docker-build
 
-# 构建并启动应用、Redis、Milvus、etcd 和 MinIO
+# 构建并启动应用、Redis、Milvus、etcd、MinIO 和 SearXNG
 make docker-run
+```
+
+`web_search` 会调用 Compose 内的私有 SearXNG 聚合真实搜索结果，并把标题、链接、摘要、来源引擎和发布时间返回给 ReAct。宿主机运行 `make run` 时，需要先启动搜索服务：
+
+```bash
+docker compose up -d searxng
 ```
 
 ## API 接口

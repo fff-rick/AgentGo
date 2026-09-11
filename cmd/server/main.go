@@ -102,7 +102,7 @@ func main() {
 
 	// 工具系统
 	toolRegistry := tool.NewRegistry()
-	registerBuiltinTools(toolRegistry, logger)
+	registerBuiltinTools(toolRegistry, cfg.Search, logger)
 	toolRouter := tool.NewRouter(toolRegistry, logger)
 
 	// 意图识别器
@@ -173,9 +173,9 @@ func main() {
 }
 
 // registerBuiltinTools 注册所有内置工具
-func registerBuiltinTools(registry *tool.Registry, logger *zap.Logger) {
+func registerBuiltinTools(registry *tool.Registry, searchCfg config.SearchConfig, logger *zap.Logger) {
 	tools := []tool.Tool{
-		toolbuiltin.NewSearchTool(logger),
+		toolbuiltin.NewSearchTool(searchCfg, logger),
 		toolbuiltin.NewCalculatorTool(logger),
 		toolbuiltin.NewDatabaseTool(logger),
 	}
