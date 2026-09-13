@@ -33,26 +33,35 @@ const (
 type Retriever struct {
 	vectorDB       vectordb.VectorDB
 	embedder       embedding.Client
+	keywordStore   KeywordSearcher
 	cache          cache.Cache
 	scoreThreshold float64
 	logger         *zap.Logger
 }
 
+// KeywordSearcher is implemented by the PostgreSQL document index.
+type KeywordSearcher interface {
+	Search(ctx context.Context, query string, topK int) ([]model.Reference, error)
+}
+
 // NewRetriever 创建多路检索引擎
-func NewRetriever(vectorDB vectordb.VectorDB, embedder embedding.Client, cache cache.Cache, scoreThreshold float64, logger *zap.Logger) *Retriever {
-	return &Retriever{
+func NewRetriever(vectorDB vectordb.VectorDB, embedder embedding.Client, cache cache.Cache, scoreThreshold float64, logger *zap.Logger, keywordStores ...KeywordSearcher) *Retriever {
+	r := &Retriever{
 		vectorDB:       vectorDB,
 		embedder:       embedder,
 		cache:          cache,
 		scoreThreshold: scoreThreshold,
 		logger:         logger,
 	}
+	if len(keywordStores) > 0 {
+		r.keywordStore = keywordStores[0]
+	}
+	return r
 }
 
-// Retrieve 执行检索。关键词检索尚未接入前默认使用向量检索，避免空的
-// 关键词结果参与 RRF 后覆盖 Milvus 返回的原始相似度分数。
+// Retrieve 默认执行 Milvus + PostgreSQL 混合检索。
 func (r *Retriever) Retrieve(ctx context.Context, query string, topK int) ([]model.Reference, error) {
-	return r.RetrieveWithMode(ctx, query, topK, ModeVector)
+	return r.RetrieveWithMode(ctx, query, topK, ModeHybrid)
 }
 
 // RetrieveWithMode 使用指定模式执行检索
@@ -96,6 +105,7 @@ func (r *Retriever) vectorSearch(ctx context.Context, query string, topK int) ([
 			docID = result.ID
 		}
 		refs = append(refs, model.Reference{
+			ChunkID: result.ID,
 			DocID:   docID,
 			Title:   result.Metadata["title"],
 			Content: result.Content,
@@ -114,17 +124,18 @@ func (r *Retriever) vectorSearch(ctx context.Context, query string, topK int) ([
 
 // keywordSearch 关键词全文检索
 func (r *Retriever) keywordSearch(ctx context.Context, query string, topK int) ([]model.Reference, error) {
-	// 实际项目中使用 Elasticsearch 或 PostgreSQL 全文索引
-	// 此处提供框架示意
-
-	keywords := strings.Fields(query)
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, fmt.Errorf("关键词不能为空")
+	}
+	if r.keywordStore == nil {
+		return nil, fmt.Errorf("PostgreSQL 关键词索引未配置")
+	}
 	r.logger.Info("关键词检索",
-		zap.Strings("keywords", keywords),
+		zap.String("query", query),
 		zap.Int("top_k", topK),
 	)
-
-	// 实现: results, err := r.esClient.Search(ctx, keywords, topK)
-	return nil, nil
+	return r.keywordStore.Search(ctx, query, topK)
 }
 
 // hybridSearch 混合检索：并发执行向量检索和关键词检索，然后融合排序
@@ -194,8 +205,9 @@ func (r *Retriever) reciprocalRankFusion(lists ...[]model.Reference) []model.Ref
 
 	for _, list := range lists {
 		for rank, ref := range list {
-			scores[ref.DocID] += 1.0 / (k + float64(rank+1))
-			docs[ref.DocID] = ref
+			id := referenceKey(ref)
+			scores[id] += 1.0 / (k + float64(rank+1))
+			docs[id] = ref
 		}
 	}
 
@@ -207,8 +219,18 @@ func (r *Retriever) reciprocalRankFusion(lists ...[]model.Reference) []model.Ref
 	}
 
 	sort.Slice(result, func(i, j int) bool {
+		if result[i].Score == result[j].Score {
+			return referenceKey(result[i]) < referenceKey(result[j])
+		}
 		return result[i].Score > result[j].Score
 	})
 
 	return result
+}
+
+func referenceKey(ref model.Reference) string {
+	if ref.ChunkID != "" {
+		return ref.ChunkID
+	}
+	return ref.DocID + "\x00" + ref.Content
 }

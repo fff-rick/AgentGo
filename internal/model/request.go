@@ -12,11 +12,11 @@ type ChatRequest struct {
 
 // ChatOptions 对话可选参数
 type ChatOptions struct {
-	Model       string   `json:"model,omitempty"`        // 指定模型
-	Temperature float64  `json:"temperature,omitempty"`  // 温度参数
-	MaxTokens   int      `json:"max_tokens,omitempty"`   // 最大 token 数
-	Tools       []string `json:"tools,omitempty"`        // 允许使用的工具列表
-	EnableRAG   *bool    `json:"enable_rag,omitempty"`   // 是否启用 RAG
+	Model       string   `json:"model,omitempty"`       // 指定模型
+	Temperature float64  `json:"temperature,omitempty"` // 温度参数
+	MaxTokens   int      `json:"max_tokens,omitempty"`  // 最大 token 数
+	Tools       []string `json:"tools,omitempty"`       // 允许使用的工具列表
+	EnableRAG   *bool    `json:"enable_rag,omitempty"`  // 是否启用 RAG
 }
 
 // DocumentUploadRequest 文档上传请求
@@ -30,25 +30,29 @@ type DocumentUploadRequest struct {
 
 // LLMRequest 发送给大模型的请求
 type LLMRequest struct {
-	Model       string       `json:"model"`
-	Messages    []LLMMessage `json:"messages"`
-	Temperature float64      `json:"temperature,omitempty"`
-	MaxTokens   int          `json:"max_tokens,omitempty"`
-	Stream      bool         `json:"stream,omitempty"`
-	Tools       []ToolDef    `json:"tools,omitempty"`
+	Model        string       `json:"model"` // 路由中注册的客户端名称；供应商模型 ID 由客户端配置决定
+	Messages     []LLMMessage `json:"messages"`
+	Temperature  float64      `json:"temperature,omitempty"`
+	MaxTokens    int          `json:"max_tokens,omitempty"`
+	Stream       bool         `json:"stream,omitempty"`
+	Tools        []ToolDef    `json:"tools,omitempty"`
+	ToolChoice   string       `json:"tool_choice,omitempty"`   // auto / none / required
+	RequiredTool string       `json:"required_tool,omitempty"` // 强制调用的函数名
 }
 
 // LLMMessage 大模型消息
 type LLMMessage struct {
-	Role    string `json:"role"`    // system / user / assistant / tool
-	Content string `json:"content"`
-	Name    string `json:"name,omitempty"`
+	Role       string        `json:"role"` // system / user / assistant / tool
+	Content    string        `json:"content"`
+	Name       string        `json:"name,omitempty"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
+	ToolCalls  []LLMToolCall `json:"tool_calls,omitempty"`
 }
 
 // ToolDef 工具定义（发送给 LLM 的 Function Calling 格式）
 type ToolDef struct {
-	Type     string       `json:"type"` // function
-	Function FunctionDef  `json:"function"`
+	Type     string      `json:"type"` // function
+	Function FunctionDef `json:"function"`
 }
 
 // FunctionDef 函数定义

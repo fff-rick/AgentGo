@@ -19,6 +19,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/agent"
 	"github.com/enterprise/ai-agent-go/internal/cache"
 	"github.com/enterprise/ai-agent-go/internal/config"
+	"github.com/enterprise/ai-agent-go/internal/database"
 	"github.com/enterprise/ai-agent-go/internal/embedding"
 	"github.com/enterprise/ai-agent-go/internal/etl"
 	"github.com/enterprise/ai-agent-go/internal/handler"
@@ -77,6 +78,14 @@ func main() {
 		logger.Fatal("初始化 Ollama embedding 失败", zap.Error(err))
 	}
 
+	postgresCtx, postgresCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	postgresClient, err := database.NewPostgresClient(postgresCtx, cfg.Postgres)
+	postgresCancel()
+	if err != nil {
+		logger.Fatal("初始化 PostgreSQL 失败", zap.Error(err))
+	}
+	defer postgresClient.Close()
+
 	// 链路追踪
 	tp, err := trace.InitTracer("ai-agent-go")
 	if err != nil {
@@ -93,7 +102,7 @@ func main() {
 		client := llm.NewHTTPClient(modelCfg, cfg.LLM.RequestTimeout)
 		llmClients[modelCfg.Name] = client
 	}
-	modelRouter := llm.NewRouter(llmClients, cfg.LLM.DefaultModel, cfg.LLM.CircuitBreaker)
+	modelRouter := llm.NewRouter(llmClients, cfg.LLM.Models, cfg.LLM.CircuitBreaker)
 
 	// 记忆管理器
 	shortTermMem := memory.NewShortTermMemory(redisCache, 20)
@@ -102,14 +111,14 @@ func main() {
 
 	// 工具系统
 	toolRegistry := tool.NewRegistry()
-	registerBuiltinTools(toolRegistry, cfg.Search, logger)
+	registerBuiltinTools(toolRegistry, cfg.Search, cfg.Postgres, postgresClient, logger)
 	toolRouter := tool.NewRouter(toolRegistry, logger)
 
 	// 意图识别器
 	intentRecognizer := intent.NewRecognizer(modelRouter, logger)
 
 	// RAG 引擎
-	retriever := rag.NewRetriever(milvusClient, embeddingClient, redisCache, cfg.RAG.ScoreThreshold, logger)
+	retriever := rag.NewRetriever(milvusClient, embeddingClient, redisCache, cfg.RAG.ScoreThreshold, logger, postgresClient)
 	reranker := rag.NewReranker(modelRouter, cfg.RAG.ScoreThreshold, logger)
 	generator := rag.NewGenerator(modelRouter, logger)
 
@@ -129,9 +138,9 @@ func main() {
 
 	// ======================== 6. 初始化 HTTP 处理器 ========================
 	chatHandler := handler.NewChatHandler(orchestrator, memManager, logger)
-	etlPipeline := etl.NewPipeline(etl.NewDefaultParser(), etl.NewChunker(cfg.RAG.ChunkSize, cfg.RAG.ChunkOverlap), milvusClient, embeddingClient, logger)
-	docHandler := handler.NewDocumentHandler(etlPipeline, logger)
-	healthHandler := handler.NewHealthHandler(redisCache, milvusClient)
+	etlPipeline := etl.NewPipeline(etl.NewDefaultParser(), etl.NewChunker(cfg.RAG.ChunkSize, cfg.RAG.ChunkOverlap), milvusClient, embeddingClient, logger, postgresClient)
+	docHandler := handler.NewDocumentHandler(etlPipeline, logger, postgresClient)
+	healthHandler := handler.NewHealthHandler(redisCache, milvusClient, postgresClient)
 
 	// ======================== 7. 配置路由并启动服务器 ========================
 	gin.SetMode(cfg.Server.Mode)
@@ -173,11 +182,11 @@ func main() {
 }
 
 // registerBuiltinTools 注册所有内置工具
-func registerBuiltinTools(registry *tool.Registry, searchCfg config.SearchConfig, logger *zap.Logger) {
+func registerBuiltinTools(registry *tool.Registry, searchCfg config.SearchConfig, postgresCfg config.PostgresConfig, postgresClient *database.Client, logger *zap.Logger) {
 	tools := []tool.Tool{
 		toolbuiltin.NewSearchTool(searchCfg, logger),
 		toolbuiltin.NewCalculatorTool(logger),
-		toolbuiltin.NewDatabaseTool(logger),
+		toolbuiltin.NewDatabaseTool(postgresClient.DB(), postgresCfg, logger),
 	}
 	for _, t := range tools {
 		if err := registry.Register(t); err != nil {

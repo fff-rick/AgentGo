@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-基于 Go 1.22 构建的企业级 AI Agent 智能体平台，采用自研 Agent 框架，支持多模型路由、ReAct 推理、RAG 增强检索、工具调用、记忆管理等核心能力。
+基于 Go 1.22 构建的企业级 AI Agent 智能体平台，采用自研 Agent 框架，支持多模型路由、原生 Function Calling、RAG 增强检索、工具调用、记忆管理等核心能力。
 
 ## 技术栈
 
@@ -10,7 +10,7 @@
 |------|---------|------|
 | 语言 | Go 1.22 | 高性能、强类型、原生并发 |
 | Web 框架 | Gin | 高性能 HTTP 框架 |
-| Agent 框架 | 自研 | ReAct / Planner / Reflection 多模式 |
+| Agent 框架 | 自研 | Function Calling / Planner / Reflection 多模式 |
 | 向量数据库 | Milvus | 高性能向量检索 |
 | 缓存 | Redis | 会话管理 & 语义缓存 |
 | 关系数据库 | PostgreSQL | 持久化存储 |
@@ -27,7 +27,7 @@
 ├──────────────────────────────────────────────────────┤
 │                  Agent 编排层                         │
 │    ┌──────────┐  ┌──────────┐  ┌───────────────┐    │
-│    │  ReAct   │  │ Planner  │  │  Reflection   │    │
+│    │ Function │  │ Planner  │  │  Reflection   │    │
 │    │  Agent   │  │  Agent   │  │    Agent      │    │
 │    └──────────┘  └──────────┘  └───────────────┘    │
 ├──────────────────────────────────────────────────────┤
@@ -51,7 +51,7 @@ internal/
 ├── config/                  # 配置管理
 ├── handler/                 # HTTP 处理器
 ├── router/                  # 路由注册
-├── agent/                   # Agent 编排（ReAct/Planner/Reflection）
+├── agent/                   # Agent 编排（Function Calling/Planner/Reflection）
 ├── rag/                     # RAG 检索增强生成
 ├── memory/                  # 记忆管理（短期/长期）
 ├── tool/                    # 工具系统（注册/路由/内置工具）
@@ -73,12 +73,12 @@ pkg/common/                  # 公共工具包
 - Redis >= 7.0
 - Docker Desktop + WSL integration（使用容器启动时）
 - Milvus 2.5.x（Compose 会连同 etcd、MinIO 一起启动）
-- PostgreSQL >= 15（当前持久化仓储尚未接入）
+- PostgreSQL >= 15（文档关键词索引与只读数据库工具）
 
 ### 本地开发
 
 ```bash
-# 首次使用可修改 .env；Compose 会启动 AgentGo、Redis、Milvus、etcd、MinIO
+# 首次使用可修改 .env；Compose 会启动 AgentGo、PostgreSQL、Redis、Milvus、etcd、MinIO
 make docker-run
 curl http://localhost:8080/health
 
@@ -95,7 +95,7 @@ make docker-stop
 make tui
 ```
 
-TUI 会实时分类展示意图识别、执行阶段、ReAct 显式 Thought、工具调用与结果、RAG 引用、错误和最终答案，也能直接导入宿主机上的 Markdown 文件：
+TUI 会实时分类展示意图识别、执行阶段、模型显式 reasoning、原生 Function Calling 及结果、RAG 引用、错误和最终答案，也能直接导入宿主机上的 Markdown 文件：
 
 ```text
 /import /home/xin/docs/knowledge.md
@@ -112,26 +112,25 @@ curl -N http://localhost:8080/api/v1/chat/stream \
 
 流式 LLM 客户端兼容 `reasoning_content`、`reasoning` 和 `thinking` 三种显式推理字段。标准模型没有这些字段时，TUI 仍会展示 Agent 的阶段状态，但不会伪造推理内容。
 
-若只在宿主机运行 Go 服务，需要先准备 Redis 和 Milvus；`make run` 会自动加载 `.env`：
+若只在宿主机运行 Go 服务，需要先准备 PostgreSQL、Redis 和 Milvus；`make run` 会自动加载 `.env`：
 
 ```bash
-docker compose up -d redis milvus-standalone
+docker compose up -d postgres redis milvus-standalone
 make run
 ```
 
-默认 `.env` 使用宿主机 Ollama 的 `qwen2.5:7b` 生成回答、`bge-m3:latest` 生成 1024 维向量。Docker 通过 `host.docker.internal` 访问 Ollama：
+[`config.yaml`](config.yaml) 的 `llm.models` 同时注册 `gpt-5.5` 和本地 `qwen2.5:7b`。未指定模型的模块按 `priority` 选择数值最小的健康模型；`agent.tool_model` 则把 Function Calling 指定给 Qwen。`bge-m3:latest` 继续生成 1024 维向量：
 
 ```bash
 # Docker 容器通过 host.docker.internal 访问宿主机 Ollama
 make docker-run
 
-# 或直接在宿主机运行 AgentGo
-APP_LLM_BASE_URL=http://localhost:11434 \
-APP_EMBEDDING_BASE_URL=http://localhost:11434 \
-APP_LLM_MODEL=qwen2.5:7b make run
+# 或直接在宿主机运行 AgentGo（把本地服务地址改为 localhost）
+APP_QWEN_BASE_URL=http://localhost:11434 \
+APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 ```
 
-云端模型可同时设置 `APP_LLM_API_KEY`。完整多模型配置继续使用 `config.yaml` 中的 `llm.models`。
+模型地址和密钥通过环境变量注入，模型名称、真实模型 ID 和优先级统一维护在 `config.yaml` 的 `llm.models` 中。指定模型熔断时也会按相同优先级选择其他健康模型。
 
 ### 环境变量
 
@@ -140,14 +139,19 @@ APP_LLM_MODEL=qwen2.5:7b make run
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `APP_REDIS_ADDR` | `localhost:6379` | Redis 地址；Compose 内自动改为 `redis:6379` |
+| `APP_POSTGRES_HOST` | `localhost` | PostgreSQL 地址；Compose 内自动改为 `postgres` |
+| `APP_POSTGRES_DBNAME` | `ai_agent` | 文档全文索引和数据库工具使用的数据库 |
+| `APP_POSTGRES_QUERY_TIMEOUT` | `10s` | `database_query` 单次 SELECT 的最大执行时间 |
+| `APP_POSTGRES_MAX_ROWS` | `100` | `database_query` 最多返回的数据行数 |
 | `APP_MILVUS_ADDR` | `localhost:19530` | Milvus gRPC 地址；Compose 内自动改为 `milvus-standalone:19530` |
 | `APP_MILVUS_DATABASE` | `default` | Milvus database |
 | `APP_MILVUS_COLLECTION_NAME` | `documents_bge_m3` | 默认 collection，启动时自动创建 |
 | `APP_MILVUS_DIMENSION` | `1024` | Milvus 向量维度，必须与 embedding 输出一致 |
 | `APP_MILVUS_METRIC_TYPE` | `COSINE` | `COSINE`、`L2` 或 `IP` |
 | `APP_MILVUS_CONNECT_TIMEOUT` | `60s` | 启动连接和 collection 初始化超时 |
-| `APP_LLM_BASE_URL` | `http://host.docker.internal:11434` | Ollama 的 OpenAI-compatible API 根地址 |
-| `APP_LLM_MODEL` | `qwen2.5:7b` | 模型 ID |
+| `APP_LLM_BASE_URL` | `https://api.openai.com` | 主模型 API 根地址 |
+| `APP_LLM_API_KEY` | 空 | 主模型 API 密钥 |
+| `APP_QWEN_BASE_URL` | `http://host.docker.internal:11434` | 本地 Qwen 的 OpenAI-compatible API 根地址 |
 | `APP_EMBEDDING_BASE_URL` | `http://host.docker.internal:11434` | Ollama 原生 API 根地址 |
 | `APP_EMBEDDING_MODEL` | `bge-m3:latest` | embedding 模型 |
 | `APP_EMBEDDING_DIMENSION` | `1024` | embedding 输出维度 |
@@ -160,7 +164,7 @@ APP_LLM_MODEL=qwen2.5:7b make run
 | `APP_SERVER_WRITE_TIMEOUT` | `300s` | 本地模型完整请求的写超时 |
 | `APP_AGENT_ENABLE_REFLECTION` | `false` | 是否额外调用一次模型反思答案 |
 
-文档上传会经过分块、Ollama 批量向量化并写入 Milvus；RAG 查询和长期记忆使用同一个 embedding 模型。验证 Milvus 数据链路：
+文档上传会经过分块、Ollama 批量向量化并写入 Milvus，同时将相同 chunk 写入 PostgreSQL 全文索引。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。验证 Milvus 数据链路：
 
 ```bash
 make test-milvus
@@ -172,11 +176,11 @@ make test-milvus
 # 仅构建本地镜像 ai-agent-go:local
 make docker-build
 
-# 构建并启动应用、Redis、Milvus、etcd、MinIO 和 SearXNG
+# 构建并启动应用、PostgreSQL、Redis、Milvus、etcd、MinIO 和 SearXNG
 make docker-run
 ```
 
-`web_search` 会调用 Compose 内的私有 SearXNG 聚合真实搜索结果，并把标题、链接、摘要、来源引擎和发布时间返回给 ReAct。宿主机运行 `make run` 时，需要先启动搜索服务：
+`web_search` 会调用 Compose 内的私有 SearXNG 聚合真实搜索结果，并把标题、链接、摘要、来源引擎和发布时间作为原生 tool 消息返回给模型。宿主机运行 `make run` 时，需要先启动搜索服务：
 
 ```bash
 docker compose up -d searxng
@@ -197,7 +201,7 @@ docker compose up -d searxng
 
 1. **三态熔断器**：支持 Closed/Open/HalfOpen 三种状态，保护 LLM 调用链路
 2. **多模型路由**：根据任务复杂度智能选择模型，兼顾成本和效果
-3. **ReAct 推理循环**：Thought → Action → Observation 迭代式推理
+3. **原生 Function Calling**：官方 OpenAI Go SDK 驱动，支持并行调用、指定工具、结构化 tool 消息和流式答案
 4. **混合检索**：向量检索 + 关键词检索 + Rerank 重排序
 5. **分层记忆**：短期记忆（Redis）+ 长期记忆（PostgreSQL + Milvus）
 6. **工具系统**：基于 Go interface 的插件化工具注册和调度
@@ -209,7 +213,7 @@ docker compose up -d searxng
 项目包含可复现的离线微基准，以及基于公开 HTTP API 的效果/性能评测 runner：
 
 ```bash
-make benchmark       # 无外部依赖：ETL、工具路由、ReAct 解析、RRF、熔断器
+make benchmark       # 无外部依赖：ETL、工具路由、RRF、熔断器
 make benchmark-e2e   # 对已启动的 localhost:8080 运行 smoke 数据集
 ```
 

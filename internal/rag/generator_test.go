@@ -39,7 +39,7 @@ func TestGeneratorEmitsIncrementalAnswer(t *testing.T) {
 		{Content: "回答"},
 		{Done: true},
 	}}
-	router := llm.NewRouter(map[string]llm.Client{"streaming": client}, "streaming", config.CBConfig{
+	router := llm.NewRouter(map[string]llm.Client{"streaming": client}, []config.ModelConfig{{Name: "streaming"}}, config.CBConfig{
 		FailureThreshold: 3,
 		SuccessThreshold: 1,
 	})

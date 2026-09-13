@@ -1,5 +1,5 @@
 // Package agent 提供 AI Agent 的编排和推理能力。
-// 包含多种 Agent 策略：ReAct（推理-行动循环）、Planner（规划执行）、Reflection（反思改进）。
+// 包含 Function Calling、Planner 和 Reflection 等 Agent 策略。
 package agent
 
 import (
@@ -37,7 +37,7 @@ type OrchestratorDeps struct {
 // Orchestrator Agent 编排器。
 // 作为整个 Agent 系统的入口，负责：
 // 1. 意图识别 → 确定处理策略
-// 2. 根据意图选择合适的 Agent（ReAct / Planner / 直接回复）
+// 2. 根据意图选择合适的 Agent（Function Calling / Planner / 直接回复）
 // 3. 管理上下文记忆
 // 4. 编排 RAG 检索和工具调用
 type Orchestrator struct {
@@ -55,6 +55,7 @@ func NewOrchestrator(deps OrchestratorDeps) *Orchestrator {
 		deps.ModelRouter,
 		deps.ToolRouter,
 		deps.Config.MaxIterations,
+		deps.Config.ToolModel,
 		deps.Logger,
 	)
 
@@ -97,6 +98,7 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 	// 3. 根据意图路由到对应的处理策略
 	var answer string
 	var toolCalls []model.ToolCallInfo
+	var steps []model.AgentStep
 	var references []model.Reference
 	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "route", Message: routeMessage(intentResult.Intent)})
 
@@ -104,9 +106,9 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 	case intent.IntentRAGQuery:
 		answer, references, err = o.handleRAGQuery(ctx, req.Message, history)
 	case intent.IntentToolUse:
-		answer, toolCalls, err = o.handleToolUse(ctx, req.Message, history, intentResult.RequiredTools)
+		answer, toolCalls, steps, err = o.handleToolUse(ctx, req.Message, history, intentResult.RequiredTools)
 	case intent.IntentComplexTask:
-		answer, toolCalls, err = o.handleComplexTask(ctx, req.Message, history)
+		answer, toolCalls, steps, err = o.handleComplexTask(ctx, req.Message, history)
 	default:
 		answer, err = o.handleChat(ctx, req.Message, history)
 	}
@@ -136,6 +138,7 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 		SessionID:  req.SessionID,
 		Content:    answer,
 		ToolCalls:  toolCalls,
+		Steps:      steps,
 		References: references,
 		CreatedAt:  time.Now(),
 	}
@@ -153,7 +156,7 @@ func routeMessage(intentName string) string {
 	case intent.IntentRAGQuery:
 		return "正在进行知识库检索与回答生成"
 	case intent.IntentToolUse:
-		return "正在执行 ReAct 工具调用"
+		return "正在执行原生 Function Calling"
 	case intent.IntentComplexTask:
 		return "正在规划并执行复杂任务"
 	default:
@@ -220,22 +223,22 @@ func (o *Orchestrator) handleRAGQuery(ctx context.Context, query string, history
 	return answer, refs, nil
 }
 
-// handleToolUse 处理工具调用：使用 ReAct Agent 进行推理和工具调用
-func (o *Orchestrator) handleToolUse(ctx context.Context, message string, history []model.LLMMessage, requiredTools []string) (string, []model.ToolCallInfo, error) {
+// handleToolUse 使用原生 Function Calling 执行工具循环。
+func (o *Orchestrator) handleToolUse(ctx context.Context, message string, history []model.LLMMessage, requiredTools []string) (string, []model.ToolCallInfo, []model.AgentStep, error) {
 	result, err := o.reactAgent.RunWithRequiredTools(ctx, message, history, requiredTools)
 	if err != nil {
-		return "", nil, fmt.Errorf("ReAct Agent 执行失败: %w", err)
+		return "", nil, nil, fmt.Errorf("ReAct Agent 执行失败: %w", err)
 	}
-	return result.Answer, result.ToolCalls, nil
+	return result.Answer, result.ToolCalls, result.Steps, nil
 }
 
 // handleComplexTask 处理复杂任务：先规划再逐步执行
-func (o *Orchestrator) handleComplexTask(ctx context.Context, message string, history []model.LLMMessage) (string, []model.ToolCallInfo, error) {
+func (o *Orchestrator) handleComplexTask(ctx context.Context, message string, history []model.LLMMessage) (string, []model.ToolCallInfo, []model.AgentStep, error) {
 	result, err := o.planner.Execute(ctx, message, history)
 	if err != nil {
 		// 降级到 ReAct
 		o.deps.Logger.Warn("规划执行失败，降级到 ReAct", zap.Error(err))
 		return o.handleToolUse(ctx, message, history, nil)
 	}
-	return result.Answer, result.ToolCalls, nil
+	return result.Answer, result.ToolCalls, result.Steps, nil
 }

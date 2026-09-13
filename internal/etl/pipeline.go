@@ -14,24 +14,34 @@ import (
 )
 
 // Pipeline 文档 ETL 流水线。
-// 完整流程：原始文档 → 解析 → 分块 → 向量化 → 存入向量数据库。
+// 完整流程：原始文档 → 解析 → 分块 → 向量化 → 写入 Milvus 和 PostgreSQL。
 type Pipeline struct {
 	parser   Parser
 	chunker  *Chunker
 	vectorDB vectordb.VectorDB
 	embedder embedding.Client
+	indexer  DocumentIndexer
 	logger   *zap.Logger
 }
 
+// DocumentIndexer persists chunks for PostgreSQL keyword search.
+type DocumentIndexer interface {
+	IndexDocument(ctx context.Context, doc *model.Document, chunks []model.DocumentChunk) error
+}
+
 // NewPipeline 创建 ETL 流水线
-func NewPipeline(parser Parser, chunker *Chunker, vectorDB vectordb.VectorDB, embedder embedding.Client, logger *zap.Logger) *Pipeline {
-	return &Pipeline{
+func NewPipeline(parser Parser, chunker *Chunker, vectorDB vectordb.VectorDB, embedder embedding.Client, logger *zap.Logger, indexers ...DocumentIndexer) *Pipeline {
+	p := &Pipeline{
 		parser:   parser,
 		chunker:  chunker,
 		vectorDB: vectorDB,
 		embedder: embedder,
 		logger:   logger,
 	}
+	if len(indexers) > 0 {
+		p.indexer = indexers[0]
+	}
+	return p
 }
 
 // ProcessDocument 处理单个文档：解析 → 分块 → 向量化 → 入库
@@ -49,19 +59,19 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 	}
 
 	// 阶段二：文档分块
-	chunks := p.chunker.Split(parsed.Content, StrategySentence)
-	if len(chunks) == 0 {
+	parsedChunks := p.chunker.Split(parsed.Content, StrategySentence)
+	if len(parsedChunks) == 0 {
 		return nil, fmt.Errorf("文档分块结果为空")
 	}
 
 	p.logger.Info("文档分块完成",
 		zap.String("doc_id", doc.ID),
-		zap.Int("chunk_count", len(chunks)),
+		zap.Int("chunk_count", len(parsedChunks)),
 	)
 
 	// 阶段三：向量化并入库
-	texts := make([]string, len(chunks))
-	for i, chunk := range chunks {
+	texts := make([]string, len(parsedChunks))
+	for i, chunk := range parsedChunks {
 		texts[i] = chunk.Content
 	}
 	embeddings, err := p.embedder.EmbedBatch(ctx, texts)
@@ -69,10 +79,13 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 		return nil, fmt.Errorf("文档向量化失败: %w", err)
 	}
 
-	records := make([]vectordb.VectorRecord, 0, len(chunks))
-	for i, chunk := range chunks {
+	records := make([]vectordb.VectorRecord, 0, len(parsedChunks))
+	keywordChunks := make([]model.DocumentChunk, 0, len(parsedChunks))
+	chunkIDs := make([]string, 0, len(parsedChunks))
+	for i, chunk := range parsedChunks {
+		chunkID := uuid.New().String()
 		record := vectordb.VectorRecord{
-			ID:        uuid.New().String(),
+			ID:        chunkID,
 			Content:   chunk.Content,
 			Embedding: embeddings[i],
 			Metadata: map[string]string{
@@ -82,17 +95,31 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 			},
 		}
 		records = append(records, record)
+		chunkIDs = append(chunkIDs, chunkID)
+		keywordChunks = append(keywordChunks, model.DocumentChunk{
+			ID: chunkID, DocID: doc.ID, Content: chunk.Content,
+			ChunkIndex: chunk.ChunkIndex, CreatedAt: time.Now(),
+		})
 	}
 
 	if err := p.vectorDB.Insert(ctx, "", records); err != nil {
 		p.logger.Error("向量入库失败", zap.Error(err))
 		return nil, fmt.Errorf("向量入库失败: %w", err)
 	}
+	if p.indexer != nil {
+		if err := p.indexer.IndexDocument(ctx, doc, keywordChunks); err != nil {
+			p.logger.Error("关键词索引入库失败", zap.Error(err))
+			if cleanupErr := p.vectorDB.Delete(ctx, "", chunkIDs); cleanupErr != nil {
+				p.logger.Error("回滚 Milvus 文档分块失败", zap.Error(cleanupErr))
+			}
+			return nil, fmt.Errorf("关键词索引入库失败: %w", err)
+		}
+	}
 
 	elapsed := time.Since(startTime)
 	p.logger.Info("文档处理完成",
 		zap.String("doc_id", doc.ID),
-		zap.Int("chunks", len(chunks)),
+		zap.Int("chunks", len(parsedChunks)),
 		zap.Duration("elapsed", elapsed),
 	)
 
@@ -100,7 +127,7 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 		DocID:      doc.ID,
 		Title:      doc.Title,
 		Status:     "completed",
-		ChunkCount: len(chunks),
+		ChunkCount: len(parsedChunks),
 		CreatedAt:  time.Now(),
 	}, nil
 }

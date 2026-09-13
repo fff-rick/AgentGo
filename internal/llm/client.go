@@ -2,17 +2,16 @@
 package llm
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
-	"go.uber.org/zap"
+	openai "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/enterprise/ai-agent-go/internal/config"
 	"github.com/enterprise/ai-agent-go/internal/model"
@@ -39,179 +38,91 @@ type Client interface {
 type StreamEvent struct {
 	Content   string // 文本内容增量
 	Reasoning string // 模型显式返回的 reasoning_content/reasoning/thinking
-	Done      bool   // 是否结束
-	Err       error  // 错误信息
+	ToolCalls []model.LLMToolCall
+	Done      bool  // 是否结束
+	Err       error // 错误信息
 }
 
 // HTTPClient 基于 HTTP 的 LLM 客户端实现（兼容 OpenAI API 格式）
 type HTTPClient struct {
-	name       string
-	provider   string
-	apiKey     string
-	baseURL    string
-	modelName  string
-	httpClient *http.Client
-	logger     *zap.Logger
+	name      string
+	modelName string
+	client    openai.Client
 }
 
 // NewHTTPClient 创建一个新的 HTTP LLM 客户端
 func NewHTTPClient(cfg config.ModelConfig, timeout time.Duration) *HTTPClient {
+	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	if baseURL != "" && !strings.HasSuffix(baseURL, "/v1") {
+		baseURL += "/v1"
+	}
+	opts := []option.RequestOption{
+		option.WithAPIKey(cfg.APIKey),
+		option.WithHTTPClient(&http.Client{Timeout: timeout}),
+	}
+	if baseURL != "" {
+		opts = append(opts, option.WithBaseURL(baseURL))
+	}
 	return &HTTPClient{
 		name:      cfg.Name,
-		provider:  cfg.Provider,
-		apiKey:    cfg.APIKey,
-		baseURL:   cfg.BaseURL,
 		modelName: cfg.Model,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+		client:    openai.NewClient(opts...),
 	}
 }
 
 // Chat 发送同步对话请求
 func (c *HTTPClient) Chat(ctx context.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
-	// 使用请求中指定的模型，如果未指定则使用客户端默认模型
-	if req.Model == "" {
-		req.Model = c.modelName
-	}
-	req.Stream = false
-
-	body, err := json.Marshal(req)
+	params, err := c.toSDKRequest(req)
 	if err != nil {
-		return nil, fmt.Errorf("序列化请求失败: %w", err)
+		return nil, err
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	completion, err := c.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("创建 HTTP 请求失败: %w", err)
+		return nil, fmt.Errorf("LLM 请求失败: %w", err)
 	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("HTTP 请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("LLM 返回错误状态码 %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	// 解析 OpenAI 格式的响应
-	var apiResp openAIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w", err)
-	}
-
-	return apiResp.toLLMResponse(), nil
+	return completionToResponse(completion), nil
 }
 
 // ChatStream 发送流式对话请求
 func (c *HTTPClient) ChatStream(ctx context.Context, req *model.LLMRequest) (<-chan StreamEvent, error) {
-	if req.Model == "" {
-		req.Model = c.modelName
-	}
-	req.Stream = true
-
-	body, err := json.Marshal(req)
+	params, err := c.toSDKRequest(req)
 	if err != nil {
-		return nil, fmt.Errorf("序列化请求失败: %w", err)
+		return nil, err
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("创建 HTTP 请求失败: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	httpReq.Header.Set("Accept", "text/event-stream")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("HTTP 请求失败: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return nil, fmt.Errorf("LLM 返回错误状态码 %d", resp.StatusCode)
-	}
-
 	ch := make(chan StreamEvent, 32)
-	go c.readSSEStream(ctx, resp.Body, ch)
-
+	go c.readSDKStream(ctx, params, ch)
 	return ch, nil
 }
 
-// readSSEStream 在独立的 goroutine 中读取 SSE 流
-func (c *HTTPClient) readSSEStream(ctx context.Context, body io.ReadCloser, ch chan<- StreamEvent) {
+func (c *HTTPClient) readSDKStream(ctx context.Context, params openai.ChatCompletionNewParams, ch chan<- StreamEvent) {
 	defer close(ch)
-	defer body.Close()
-
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 4096), 1024*1024)
-	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			ch <- StreamEvent{Err: ctx.Err()}
-			return
-		default:
-		}
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "[DONE]" {
-			ch <- StreamEvent{Done: true}
-			return
-		}
-		var chunk openAIStreamResponse
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			ch <- StreamEvent{Err: fmt.Errorf("解析 SSE 数据失败: %w", err)}
+	stream := c.client.Chat.Completions.NewStreaming(ctx, params)
+	defer stream.Close()
+	acc := openai.ChatCompletionAccumulator{}
+	for stream.Next() {
+		chunk := stream.Current()
+		if !acc.AddChunk(chunk) {
+			ch <- StreamEvent{Err: fmt.Errorf("无法合并 LLM 流式响应")}
 			return
 		}
 		if len(chunk.Choices) == 0 {
 			continue
 		}
-		delta := chunk.Choices[0].Delta
-		reasoning := delta.ReasoningContent
-		if reasoning == "" {
-			reasoning = delta.Reasoning
-		}
-		if reasoning == "" {
-			reasoning = delta.Thinking
-		}
-		if delta.Content != "" || reasoning != "" {
-			ch <- StreamEvent{Content: delta.Content, Reasoning: reasoning}
-		}
-		if chunk.Choices[0].FinishReason != "" {
-			ch <- StreamEvent{Done: true}
-			return
+		content := chunk.Choices[0].Delta.Content
+		reasoning := reasoningFromJSON(chunk.RawJSON())
+		if content != "" || reasoning != "" {
+			ch <- StreamEvent{Content: content, Reasoning: reasoning}
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	if err := stream.Err(); err != nil {
 		ch <- StreamEvent{Err: err}
 		return
 	}
-	ch <- StreamEvent{Done: true}
-}
-
-type openAIStreamResponse struct {
-	Choices []struct {
-		Delta struct {
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
-			Reasoning        string `json:"reasoning"`
-			Thinking         string `json:"thinking"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
+	var calls []model.LLMToolCall
+	if len(acc.Choices) > 0 {
+		calls = convertToolCalls(acc.Choices[0].Message.ToolCalls)
+	}
+	ch <- StreamEvent{Done: true, ToolCalls: calls}
 }
 
 // Name 返回客户端名称
@@ -236,36 +147,126 @@ func (c *HTTPClient) Healthy(ctx context.Context) bool {
 	return err == nil
 }
 
-// openAIResponse OpenAI 格式的 API 响应
-type openAIResponse struct {
-	Choices []struct {
-		Message struct {
-			Content          string              `json:"content"`
-			ReasoningContent string              `json:"reasoning_content"`
-			Reasoning        string              `json:"reasoning"`
-			Thinking         string              `json:"thinking"`
-			ToolCalls        []model.LLMToolCall `json:"tool_calls,omitempty"`
-		} `json:"message"`
-	} `json:"choices"`
-	Usage *model.UsageInfo `json:"usage,omitempty"`
+func (c *HTTPClient) toSDKRequest(req *model.LLMRequest) (openai.ChatCompletionNewParams, error) {
+	params := openai.ChatCompletionNewParams{Model: c.modelName}
+	for _, message := range req.Messages {
+		sdkMessage, err := toSDKMessage(message)
+		if err != nil {
+			return params, err
+		}
+		params.Messages = append(params.Messages, sdkMessage)
+	}
+	if req.Temperature != 0 {
+		params.Temperature = openai.Float(req.Temperature)
+	}
+	if req.MaxTokens > 0 {
+		params.MaxTokens = openai.Int(int64(req.MaxTokens))
+	}
+	for _, definition := range req.Tools {
+		parameters, ok := definition.Function.Parameters.(map[string]interface{})
+		if !ok {
+			return params, fmt.Errorf("工具 %q 的 parameters 不是 JSON 对象", definition.Function.Name)
+		}
+		params.Tools = append(params.Tools, openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
+			Name: definition.Function.Name, Description: openai.String(definition.Function.Description), Parameters: parameters,
+		}))
+	}
+	if len(params.Tools) > 0 {
+		params.ParallelToolCalls = openai.Bool(true)
+	}
+	if req.RequiredTool != "" {
+		params.ToolChoice = openai.ToolChoiceOptionFunctionToolChoice(openai.ChatCompletionNamedToolChoiceFunctionParam{Name: req.RequiredTool})
+	} else if req.ToolChoice != "" {
+		params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{OfAuto: openai.String(req.ToolChoice)}
+	}
+	return params, nil
 }
 
-// toLLMResponse 转换为内部统一的 LLM 响应格式
-func (r *openAIResponse) toLLMResponse() *model.LLMResponse {
-	resp := &model.LLMResponse{
-		Usage: r.Usage,
-	}
-	if len(r.Choices) > 0 {
-		message := r.Choices[0].Message
-		resp.Content = message.Content
-		resp.Reasoning = message.ReasoningContent
-		if resp.Reasoning == "" {
-			resp.Reasoning = message.Reasoning
+func toSDKMessage(message model.LLMMessage) (openai.ChatCompletionMessageParamUnion, error) {
+	switch message.Role {
+	case "system":
+		return openai.SystemMessage(message.Content), nil
+	case "developer":
+		return openai.DeveloperMessage(message.Content), nil
+	case "user":
+		return openai.UserMessage(message.Content), nil
+	case "tool":
+		if message.ToolCallID == "" {
+			return openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("tool 消息缺少 tool_call_id")
 		}
-		if resp.Reasoning == "" {
-			resp.Reasoning = message.Thinking
+		return openai.ToolMessage(message.Content, message.ToolCallID), nil
+	case "assistant":
+		result := openai.AssistantMessage(message.Content)
+		for _, call := range message.ToolCalls {
+			result.OfAssistant.ToolCalls = append(result.OfAssistant.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
+				OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
+					ID:       call.ID,
+					Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{Name: call.Function.Name, Arguments: call.Function.Arguments},
+				},
+			})
 		}
-		resp.ToolCalls = message.ToolCalls
+		return result, nil
+	default:
+		return openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("不支持的消息角色 %q", message.Role)
 	}
-	return resp
+}
+
+func completionToResponse(completion *openai.ChatCompletion) *model.LLMResponse {
+	result := &model.LLMResponse{Reasoning: reasoningFromJSON(completion.RawJSON())}
+	if len(completion.Choices) > 0 {
+		result.Content = completion.Choices[0].Message.Content
+		result.ToolCalls = convertToolCalls(completion.Choices[0].Message.ToolCalls)
+	}
+	result.Usage = &model.UsageInfo{
+		PromptTokens: int(completion.Usage.PromptTokens), CompletionTokens: int(completion.Usage.CompletionTokens), TotalTokens: int(completion.Usage.TotalTokens),
+	}
+	return result
+}
+
+func convertToolCalls(calls []openai.ChatCompletionMessageToolCallUnion) []model.LLMToolCall {
+	result := make([]model.LLMToolCall, 0, len(calls))
+	for _, call := range calls {
+		if call.Type != "function" {
+			continue
+		}
+		var converted model.LLMToolCall
+		converted.ID, converted.Type = call.ID, "function"
+		converted.Function.Name, converted.Function.Arguments = call.Function.Name, call.Function.Arguments
+		result = append(result, converted)
+	}
+	return result
+}
+
+func reasoningFromJSON(raw string) string {
+	var payload struct {
+		Choices []struct {
+			Message reasoningFields `json:"message"`
+			Delta   reasoningFields `json:"delta"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal([]byte(raw), &payload) != nil || len(payload.Choices) == 0 {
+		return ""
+	}
+	fields := payload.Choices[0].Message
+	if fields.empty() {
+		fields = payload.Choices[0].Delta
+	}
+	return fields.value()
+}
+
+type reasoningFields struct {
+	ReasoningContent string `json:"reasoning_content"`
+	Reasoning        string `json:"reasoning"`
+	Thinking         string `json:"thinking"`
+}
+
+func (r reasoningFields) empty() bool { return r.value() == "" }
+func (r reasoningFields) value() string {
+	if r.ReasoningContent != "" {
+		return r.ReasoningContent
+	}
+	if r.Reasoning != "" {
+		return r.Reasoning
+	}
+	return r.Thinking
 }
