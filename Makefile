@@ -75,11 +75,11 @@ docker-build:
 
 # 使用 Compose 启动 AgentGo、Redis 和 Milvus，并在需要时自动构建镜像
 docker-run:
-	@echo ">>> 启动 AgentGo、Redis 和 Milvus..."
+	@echo ">>> 启动 AgentGo、PostgreSQL、Redis 和 Milvus..."
 	AGENTGO_IMAGE=$(APP_IMAGE) docker compose up -d --build
 
 docker-stop:
-	@echo ">>> 停止 AgentGo、Redis 和 Milvus..."
+	@echo ">>> 停止 AgentGo、PostgreSQL、Redis 和 Milvus..."
 	docker compose down
 
 docker-logs:

@@ -13,15 +13,19 @@ import (
 
 // HealthHandler 健康检查处理器
 type HealthHandler struct {
-	cache    cache.Cache
-	vectorDB vectordb.VectorDB
+	cache      cache.Cache
+	vectorDB   vectordb.VectorDB
+	postgresDB healthChecker
+}
+
+type healthChecker interface {
+	Healthy(context.Context) bool
 }
 
 // NewHealthHandler 创建健康检查处理器
-func NewHealthHandler(cache cache.Cache, vectorDB vectordb.VectorDB) *HealthHandler {
+func NewHealthHandler(cache cache.Cache, vectorDB vectordb.VectorDB, postgresDB healthChecker) *HealthHandler {
 	return &HealthHandler{
-		cache:    cache,
-		vectorDB: vectorDB,
+		cache: cache, vectorDB: vectorDB, postgresDB: postgresDB,
 	}
 }
 
@@ -54,6 +58,14 @@ func (h *HealthHandler) Check(c *gin.Context) {
 		components["milvus"] = "healthy"
 	} else {
 		components["milvus"] = "unhealthy"
+		allHealthy = false
+	}
+
+	// 检查 PostgreSQL
+	if h.postgresDB.Healthy(ctx) {
+		components["postgres"] = "healthy"
+	} else {
+		components["postgres"] = "unhealthy"
 		allHealthy = false
 	}
 

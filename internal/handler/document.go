@@ -1,6 +1,9 @@
 package handler
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -21,16 +24,25 @@ const maxMarkdownBytes = 10 << 20
 
 // DocumentHandler 文档处理器
 type DocumentHandler struct {
-	pipeline *etl.Pipeline
-	logger   *zap.Logger
+	pipeline     *etl.Pipeline
+	documentRepo documentReader
+	logger       *zap.Logger
+}
+
+type documentReader interface {
+	FindDocument(context.Context, string) (*model.DocumentResponse, error)
 }
 
 // NewDocumentHandler 创建文档处理器
-func NewDocumentHandler(pipeline *etl.Pipeline, logger *zap.Logger) *DocumentHandler {
-	return &DocumentHandler{
+func NewDocumentHandler(pipeline *etl.Pipeline, logger *zap.Logger, repos ...documentReader) *DocumentHandler {
+	h := &DocumentHandler{
 		pipeline: pipeline,
 		logger:   logger,
 	}
+	if len(repos) > 0 {
+		h.documentRepo = repos[0]
+	}
+	return h
 }
 
 // Upload 上传文档
@@ -124,16 +136,19 @@ func (h *DocumentHandler) GetStatus(c *gin.Context) {
 		return
 	}
 
-	// 实际项目中从数据库查询文档状态
-	// doc, err := docRepo.FindByID(ctx, docID)
-
-	resp := &model.DocumentResponse{
-		DocID:      docID,
-		Title:      "示例文档",
-		Status:     "completed",
-		ChunkCount: 10,
-		CreatedAt:  time.Now(),
+	if h.documentRepo == nil {
+		common.FailWithCode(c, http.StatusServiceUnavailable, common.ErrCodeInternal, "文档存储未配置")
+		return
 	}
-
-	common.OK(c, resp)
+	doc, err := h.documentRepo.FindDocument(c.Request.Context(), docID)
+	if errors.Is(err, sql.ErrNoRows) {
+		common.FailWithCode(c, http.StatusNotFound, common.ErrCodeNotFound, "文档不存在")
+		return
+	}
+	if err != nil {
+		h.logger.Error("查询文档状态失败", zap.String("doc_id", docID), zap.Error(err))
+		common.Fail(c, http.StatusInternalServerError, common.ErrInternal(err))
+		return
+	}
+	common.OK(c, doc)
 }

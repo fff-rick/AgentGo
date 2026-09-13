@@ -4,7 +4,10 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,7 +39,6 @@ type ServerConfig struct {
 // LLMConfig 大语言模型客户端配置
 type LLMConfig struct {
 	Models         []ModelConfig `mapstructure:"models"`
-	DefaultModel   string        `mapstructure:"default_model"`
 	RequestTimeout time.Duration `mapstructure:"request_timeout"`
 	CircuitBreaker CBConfig      `mapstructure:"circuit_breaker"`
 }
@@ -91,12 +93,14 @@ type EmbeddingConfig struct {
 
 // PostgresConfig PostgreSQL 数据库连接配置
 type PostgresConfig struct {
-	Host     string `mapstructure:"host"`
-	Port     int    `mapstructure:"port"`
-	User     string `mapstructure:"user"`
-	Password string `mapstructure:"password"`
-	DBName   string `mapstructure:"dbname"`
-	SSLMode  string `mapstructure:"ssl_mode"`
+	Host         string        `mapstructure:"host"`
+	Port         int           `mapstructure:"port"`
+	User         string        `mapstructure:"user"`
+	Password     string        `mapstructure:"password"`
+	DBName       string        `mapstructure:"dbname"`
+	SSLMode      string        `mapstructure:"ssl_mode"`
+	QueryTimeout time.Duration `mapstructure:"query_timeout"`
+	MaxRows      int           `mapstructure:"max_rows"`
 }
 
 // AgentConfig Agent 编排器配置
@@ -104,6 +108,7 @@ type AgentConfig struct {
 	MaxIterations    int           `mapstructure:"max_iterations"`    // ReAct 最大迭代次数
 	DefaultTimeout   time.Duration `mapstructure:"default_timeout"`   // 单次 Agent 执行超时
 	EnableReflection bool          `mapstructure:"enable_reflection"` // 是否启用反思机制
+	ToolModel        string        `mapstructure:"tool_model"`        // Function Calling 指定的模型名称
 }
 
 // RAGConfig 检索增强生成配置
@@ -131,10 +136,16 @@ type LogConfig struct {
 
 // DSN 返回 PostgreSQL 连接字符串
 func (p PostgresConfig) DSN() string {
-	return fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		p.Host, p.Port, p.User, p.Password, p.DBName, p.SSLMode,
-	)
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(p.User, p.Password),
+		Host:   net.JoinHostPort(p.Host, strconv.Itoa(p.Port)),
+		Path:   p.DBName,
+	}
+	q := u.Query()
+	q.Set("sslmode", p.SSLMode)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // Load 从配置文件和环境变量加载配置。
@@ -174,9 +185,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("解析配置失败: %w", err)
 	}
 
-	// 数组类型的 models 很难只通过环境变量表达。开发和容器部署可使用
-	// APP_LLM_BASE_URL 等变量快速配置一个 OpenAI-compatible 模型；完整的
-	// 多模型路由仍使用 YAML 中的 llm.models。
+	expandModelEnv(cfg.LLM.Models)
 	applySingleModelEnv(cfg)
 
 	return cfg, nil
@@ -196,7 +205,14 @@ func applySingleModelEnv(cfg *Config) {
 		BaseURL:  baseURL,
 		Model:    modelName,
 	}}
-	cfg.LLM.DefaultModel = clientName
+}
+
+func expandModelEnv(models []ModelConfig) {
+	for i := range models {
+		models[i].APIKey = os.ExpandEnv(models[i].APIKey)
+		models[i].BaseURL = os.ExpandEnv(models[i].BaseURL)
+		models[i].Model = os.ExpandEnv(models[i].Model)
+	}
 }
 
 func envOrDefault(key, fallback string) string {
@@ -215,7 +231,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.mode", "debug")
 
 	// LLM 默认配置
-	v.SetDefault("llm.default_model", "gpt-4")
 	v.SetDefault("llm.request_timeout", "60s")
 	v.SetDefault("llm.circuit_breaker.failure_threshold", 5)
 	v.SetDefault("llm.circuit_breaker.success_threshold", 3)
@@ -252,11 +267,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("postgres.password", "postgres")
 	v.SetDefault("postgres.dbname", "ai_agent")
 	v.SetDefault("postgres.ssl_mode", "disable")
+	v.SetDefault("postgres.query_timeout", "10s")
+	v.SetDefault("postgres.max_rows", 100)
 
 	// Agent 默认配置
 	v.SetDefault("agent.max_iterations", 10)
 	v.SetDefault("agent.default_timeout", "120s")
 	v.SetDefault("agent.enable_reflection", true)
+	v.SetDefault("agent.tool_model", "")
 
 	// RAG 默认配置
 	v.SetDefault("rag.top_k", 5)

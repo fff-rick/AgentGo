@@ -1,4 +1,20 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${APP_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${APP_POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${APP_POSTGRES_DBNAME:-ai_agent}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${APP_POSTGRES_USER:-postgres} -d ${APP_POSTGRES_DBNAME:-ai_agent}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
@@ -112,11 +128,18 @@ services:
       APP_MILVUS_DIMENSION: ${APP_MILVUS_DIMENSION:-1024}
       APP_MILVUS_METRIC_TYPE: ${APP_MILVUS_METRIC_TYPE:-COSINE}
       APP_MILVUS_CONNECT_TIMEOUT: ${APP_MILVUS_CONNECT_TIMEOUT:-60s}
+      APP_POSTGRES_HOST: postgres
+      APP_POSTGRES_PORT: 5432
+      APP_POSTGRES_USER: ${APP_POSTGRES_USER:-postgres}
+      APP_POSTGRES_PASSWORD: ${APP_POSTGRES_PASSWORD:-postgres}
+      APP_POSTGRES_DBNAME: ${APP_POSTGRES_DBNAME:-ai_agent}
+      APP_POSTGRES_SSL_MODE: ${APP_POSTGRES_SSL_MODE:-disable}
+      APP_POSTGRES_QUERY_TIMEOUT: ${APP_POSTGRES_QUERY_TIMEOUT:-10s}
+      APP_POSTGRES_MAX_ROWS: ${APP_POSTGRES_MAX_ROWS:-100}
       APP_LLM_BASE_URL: ${APP_LLM_BASE_URL:-}
       APP_LLM_API_KEY: ${APP_LLM_API_KEY:-}
-      APP_LLM_MODEL: ${APP_LLM_MODEL:-}
-      APP_LLM_NAME: ${APP_LLM_NAME:-}
-      APP_LLM_PROVIDER: ${APP_LLM_PROVIDER:-openai-compatible}
+      APP_QWEN_BASE_URL: ${APP_QWEN_BASE_URL:-http://host.docker.internal:11434}
+      APP_QWEN_API_KEY: ${APP_QWEN_API_KEY:-ollama}
       APP_LLM_REQUEST_TIMEOUT: ${APP_LLM_REQUEST_TIMEOUT:-180s}
       APP_EMBEDDING_BASE_URL: ${APP_EMBEDDING_BASE_URL:-http://host.docker.internal:11434}
       APP_EMBEDDING_MODEL: ${APP_EMBEDDING_MODEL:-bge-m3:latest}
@@ -130,6 +153,8 @@ services:
       APP_SEARCH_LANGUAGE: ${APP_SEARCH_LANGUAGE:-zh-CN}
       APP_SEARCH_SAFE_SEARCH: ${APP_SEARCH_SAFE_SEARCH:-1}
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
       milvus-standalone:
@@ -141,6 +166,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  postgres-data:
   redis-data:
   etcd-data:
   minio-data:

@@ -3,6 +3,8 @@ package llm
 import (
 	"encoding/json"
 	"testing"
+
+	openai "github.com/openai/openai-go/v3"
 )
 
 func TestOpenAIResponseReasoningFallbacks(t *testing.T) {
@@ -17,11 +19,11 @@ func TestOpenAIResponseReasoningFallbacks(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var response openAIResponse
+			var response openai.ChatCompletion
 			if err := json.Unmarshal([]byte(tt.body), &response); err != nil {
 				t.Fatal(err)
 			}
-			if got := response.toLLMResponse().Reasoning; got != tt.want {
+			if got := completionToResponse(&response).Reasoning; got != tt.want {
 				t.Fatalf("reasoning = %q, want %q", got, tt.want)
 			}
 		})

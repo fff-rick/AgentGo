@@ -76,8 +76,9 @@ func (r *Router) BatchExecute(ctx context.Context, calls []ToolCall) []*ToolCall
 
 	for i, call := range calls {
 		go func(idx int, c ToolCall) {
+			start := time.Now()
 			result, err := r.Execute(ctx, c.Name, c.Input)
-			ch <- indexedResult{Index: idx, Result: result, Err: err}
+			ch <- indexedResult{Index: idx, Result: result, Err: err, Duration: time.Since(start)}
 		}(i, call)
 	}
 
@@ -87,6 +88,7 @@ func (r *Router) BatchExecute(ctx context.Context, calls []ToolCall) []*ToolCall
 			ToolName: calls[ir.Index].Name,
 			Result:   ir.Result,
 			Err:      ir.Err,
+			Duration: ir.Duration,
 		}
 	}
 
@@ -119,12 +121,14 @@ type ToolCallResult struct {
 	ToolName string
 	Result   *ToolResult
 	Err      error
+	Duration time.Duration
 }
 
 type indexedResult struct {
-	Index  int
-	Result *ToolResult
-	Err    error
+	Index    int
+	Result   *ToolResult
+	Err      error
+	Duration time.Duration
 }
 
 // truncate 截断字符串，超过 maxLen 的部分用省略号代替

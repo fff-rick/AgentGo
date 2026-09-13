@@ -22,7 +22,6 @@ Benchmark 同时回答四个问题：
 | ETL | 10 KiB / 1 MiB，中英文，三种分块策略 | ns/op、MB/s、B/op、allocs/op |
 | Tool Registry | 10 / 1k / 10k 工具，串行及并行查找 | ns/op、allocs/op |
 | Tool Router | 并行 no-op 工具调度 | ns/op、allocs/op |
-| ReAct parser | Action、Thought、Final Answer 解析 | ns/op、allocs/op |
 | RAG RRF | 20 / 200 / 2k 候选融合 | ns/op、B/op、allocs/op |
 | Circuit Breaker | 并行 Allow | ns/op、锁竞争、allocs/op |
 
@@ -118,7 +117,7 @@ Runner 输出 HTTP/业务成功率、任务通过率、工具准确率、检索 
 - **Task Pass Rate** = 全部断言通过的任务数 / 总任务数。
 - **Tool Accuracy** = 调用了正确工具的工具任务数 / 工具任务数。
 - **Intent Macro-F1 / Route Accuracy**：分别衡量四类意图的均衡分类效果，以及实际进入的处理路径是否正确。当前公开响应不暴露 intent/route，只能先以端到端任务通过率间接覆盖，不能据此宣称意图准确率。
-- 生产版再记录参数准确率、无效调用率、平均工具调用次数和 iteration-limit rate。
+- **Function Calling**：记录参数准确率、并行调用正确率、强制工具遵循率、平均工具调用次数和 iteration-limit rate；HTTP 响应中的 `steps` 可用于回放执行链路。
 
 ### RAG
 
@@ -129,7 +128,7 @@ Runner 输出 HTTP/业务成功率、任务通过率、工具准确率、检索 
 ### 性能与可靠性
 
 - 非流式：端到端 P50/P95/P99、RPS、错误率。
-- 流式：TTFT、token 间隔、完整响应时间。当前 `/chat/stream` 是同步结果后模拟切块，TTFT 不代表真实模型流式性能，完成真正的流式链路后再设门禁。
+- 流式：TTFT、token 间隔、完整响应时间。普通对话、RAG 生成和 Function Calling 最终答案均直接转发模型流式增量。
 - 资源：CPU、RSS、goroutine、GC pause、Redis/Milvus/LLM 连接池。
 - 故障注入：模型 429/500/超时、Redis/Milvus 不可用、工具超时。记录降级成功率、熔断开启时间和恢复时间。
 - 成本：输入/输出 token、模型费用、工具费用，以及 **cost per passed task**。

@@ -6,6 +6,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/vectordb"
 )
 
@@ -34,6 +35,14 @@ func (s stubVectorDB) Search(context.Context, string, []float32, int) ([]vectord
 func (s stubVectorDB) Delete(context.Context, string, []string) error { return nil }
 func (s stubVectorDB) Close() error                                   { return nil }
 func (s stubVectorDB) Healthy(context.Context) bool                   { return true }
+
+type stubKeywordStore struct {
+	results []model.Reference
+}
+
+func (s stubKeywordStore) Search(context.Context, string, int) ([]model.Reference, error) {
+	return s.results, nil
+}
 
 func TestRetrieveFiltersLowSimilarityAndPreservesMilvusScore(t *testing.T) {
 	db := stubVectorDB{results: []vectordb.SearchResult{
@@ -69,5 +78,27 @@ func TestHybridSearchWithEmptyKeywordResultsPreservesVectorScore(t *testing.T) {
 	}
 	if len(refs) != 1 || refs[0].Score != 0.88 {
 		t.Fatalf("refs = %#v, want one ref with original score 0.88", refs)
+	}
+}
+
+func TestRetrieveUsesHybridSearchAndFusesByChunk(t *testing.T) {
+	db := stubVectorDB{results: []vectordb.SearchResult{
+		{ID: "chunk-1", Content: "hybrid content", Score: 0.9, Metadata: map[string]string{"doc_id": "doc-1"}},
+		{ID: "chunk-2", Content: "another chunk", Score: 0.8, Metadata: map[string]string{"doc_id": "doc-1"}},
+	}}
+	keywords := stubKeywordStore{results: []model.Reference{
+		{ChunkID: "chunk-1", DocID: "doc-1", Content: "hybrid content", Score: 1},
+	}}
+	retriever := NewRetriever(db, stubEmbedder{}, nil, 0.7, zap.NewNop(), keywords)
+
+	refs, err := retriever.Retrieve(context.Background(), "hybrid", 5)
+	if err != nil {
+		t.Fatalf("Retrieve() error = %v", err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("Retrieve() returned %d refs, want both chunks", len(refs))
+	}
+	if refs[0].ChunkID != "chunk-1" {
+		t.Fatalf("top chunk = %q, want chunk-1 returned by both retrievers", refs[0].ChunkID)
 	}
 }

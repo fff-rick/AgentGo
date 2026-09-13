@@ -8,6 +8,7 @@ type ChatResponse struct {
 	MessageID  string         `json:"message_id"`
 	Content    string         `json:"content"`
 	ToolCalls  []ToolCallInfo `json:"tool_calls,omitempty"`
+	Steps      []AgentStep    `json:"steps,omitempty"`
 	References []Reference    `json:"references,omitempty"`
 	Usage      *UsageInfo     `json:"usage,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
@@ -29,6 +30,7 @@ type ToolCallInfo struct {
 
 // Reference RAG 检索引用的文档片段
 type Reference struct {
+	ChunkID string  `json:"chunk_id,omitempty"`
 	DocID   string  `json:"doc_id"`
 	Title   string  `json:"title"`
 	Content string  `json:"content"`

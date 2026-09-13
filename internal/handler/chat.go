@@ -104,7 +104,7 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 		h.writeSSE(c.Writer, event.Type, event)
 		flusher.Flush()
 	})
-	_, err := h.orchestrator.ProcessMessage(ctx, &req)
+	resp, err := h.orchestrator.ProcessMessage(ctx, &req)
 	if err != nil {
 		h.writeSSE(c.Writer, "error", map[string]string{"error": err.Error()})
 		flusher.Flush()
@@ -112,7 +112,8 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 	}
 
 	// 发送完成事件
-	h.writeSSE(c.Writer, "done", map[string]string{"status": "completed"})
+	resp.MessageID = uuid.New().String()
+	h.writeSSE(c.Writer, "done", resp)
 	flusher.Flush()
 }
 

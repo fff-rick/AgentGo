@@ -20,23 +20,27 @@ type Router struct {
 	mu       sync.RWMutex
 	clients  map[string]Client          // 模型名称 -> 客户端
 	breakers map[string]*CircuitBreaker // 模型名称 -> 熔断器
-	default_ string                     // 默认模型名称
+	priority map[string]int             // 模型名称 -> 优先级，数值越小越优先
 	logger   *zap.Logger
 }
 
 // NewRouter 创建模型路由器。
 // 为每个注册的客户端自动创建独立的熔断器实例。
-func NewRouter(clients map[string]Client, defaultModel string, cbCfg config.CBConfig) *Router {
+func NewRouter(clients map[string]Client, models []config.ModelConfig, cbCfg config.CBConfig) *Router {
 	breakers := make(map[string]*CircuitBreaker, len(clients))
+	priorities := make(map[string]int, len(models))
 	for name := range clients {
 		cb := NewCircuitBreaker(cbCfg.FailureThreshold, cbCfg.SuccessThreshold, cbCfg.Timeout)
 		breakers[name] = cb
+	}
+	for _, model := range models {
+		priorities[model.Name] = model.Priority
 	}
 
 	return &Router{
 		clients:  clients,
 		breakers: breakers,
-		default_: defaultModel,
+		priority: priorities,
 	}
 }
 
@@ -46,8 +50,8 @@ func (r *Router) SetLogger(logger *zap.Logger) {
 }
 
 // Chat 通过路由选择模型并发送对话请求。
-// 如果请求指定了模型则使用指定模型，否则使用默认模型。
-// 当目标模型熔断时自动降级到其他可用模型。
+// 如果请求指定了模型则优先使用指定模型，否则按 priority 选择。
+// 当目标模型熔断时按 priority 自动降级到其他可用模型。
 func (r *Router) Chat(ctx context.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
 	client, err := r.selectClient(req.Model)
 	if err != nil {
@@ -93,16 +97,32 @@ func (r *Router) ChatStream(ctx context.Context, req *model.LLMRequest) (<-chan 
 		if fbErr != nil {
 			return nil, common.ErrCircuitOpen(modelName)
 		}
+		r.log("模型 %s 熔断，降级到 %s", modelName, fallback.Name())
 		client = fallback
+		breaker = r.getBreaker(fallback.Name())
 	}
 
-	ch, err := client.ChatStream(ctx, req)
+	source, err := client.ChatStream(ctx, req)
 	if err != nil {
 		breaker.RecordFailure()
 		return nil, common.WrapError(common.ErrCodeLLMFailed, "LLM 流式调用失败", err)
 	}
 
-	breaker.RecordSuccess()
+	ch := make(chan StreamEvent, 32)
+	go func() {
+		defer close(ch)
+		failed := false
+		for event := range source {
+			if event.Err != nil && !failed {
+				breaker.RecordFailure()
+				failed = true
+			}
+			ch <- event
+		}
+		if !failed {
+			breaker.RecordSuccess()
+		}
+	}()
 	return ch, nil
 }
 
@@ -127,41 +147,49 @@ func (r *Router) selectClient(modelName string) (Client, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	name := modelName
-	if name == "" {
-		name = r.default_
+	if modelName != "" {
+		client, ok := r.clients[modelName]
+		if !ok {
+			return nil, fmt.Errorf("未注册的模型: %s", modelName)
+		}
+		return client, nil
 	}
-
-	client, ok := r.clients[name]
-	if !ok {
-		return nil, fmt.Errorf("未注册的模型: %s", name)
+	for _, name := range r.orderedModels("") {
+		return r.clients[name], nil
 	}
-	return client, nil
+	return nil, fmt.Errorf("未注册任何模型")
 }
 
 // findFallback 在主模型不可用时寻找备选模型。
-// 按模型名称排序选择第一个未熔断的模型。
+// 按 priority（同优先级按名称）选择第一个未熔断的模型。
 func (r *Router) findFallback(excludeModel string) (Client, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// 收集可用模型并排序，保证降级行为可预测
-	var candidates []string
-	for name := range r.clients {
-		if name == excludeModel {
-			continue
-		}
-		candidates = append(candidates, name)
-	}
-	sort.Strings(candidates)
-
-	for _, name := range candidates {
+	for _, name := range r.orderedModels(excludeModel) {
 		if breaker, ok := r.breakers[name]; ok && breaker.Allow() {
 			return r.clients[name], nil
 		}
 	}
 
 	return nil, fmt.Errorf("所有模型均不可用")
+}
+
+func (r *Router) orderedModels(excludeModel string) []string {
+	names := make([]string, 0, len(r.clients))
+	for name := range r.clients {
+		if name != excludeModel {
+			names = append(names, name)
+		}
+	}
+	sort.Slice(names, func(i, j int) bool {
+		left, right := r.priority[names[i]], r.priority[names[j]]
+		if left == right {
+			return names[i] < names[j]
+		}
+		return left < right
+	})
+	return names
 }
 
 // getBreaker 获取指定模型的熔断器
