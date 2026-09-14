@@ -199,7 +199,8 @@ func (o *Orchestrator) handleRAGQuery(ctx context.Context, query string, history
 	if topK <= 0 {
 		topK = 5
 	}
-	refs, err := o.deps.Retriever.Retrieve(ctx, query, topK)
+	retrievalQuery := contextualRAGQuery(query, history)
+	refs, err := o.deps.Retriever.Retrieve(ctx, retrievalQuery, topK)
 	if err != nil {
 		o.deps.Logger.Warn("RAG 检索失败，降级为直接回答", zap.Error(err))
 		answer, chatErr := o.handleChat(ctx, query, history)
@@ -208,19 +209,44 @@ func (o *Orchestrator) handleRAGQuery(ctx context.Context, query string, history
 
 	// 重排序
 	if o.deps.RAGConfig.EnableRerank {
-		refs, _ = o.deps.Reranker.Rerank(ctx, query, refs)
+		refs, _ = o.deps.Reranker.Rerank(ctx, retrievalQuery, refs)
 	}
 	if len(refs) == 0 {
 		observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "rag", Message: "未找到达到相关性阈值的知识库内容"})
 	}
 
 	// 生成答案
-	answer, err := o.deps.Generator.Generate(ctx, query, refs)
+	answer, err := o.deps.Generator.Generate(ctx, query, refs, history)
 	if err != nil {
 		return "", nil, err
 	}
 
 	return answer, refs, nil
+}
+
+func contextualRAGQuery(query string, history []model.LLMMessage) string {
+	if len(history) == 0 {
+		return query
+	}
+	start := len(history) - 4
+	if start < 0 {
+		start = 0
+	}
+	var context strings.Builder
+	context.WriteString("对话上下文：\n")
+	for _, message := range history[start:] {
+		if message.Role != "user" && message.Role != "assistant" {
+			continue
+		}
+		content := []rune(strings.TrimSpace(message.Content))
+		if len(content) > 500 {
+			content = content[:500]
+		}
+		fmt.Fprintf(&context, "%s：%s\n", message.Role, string(content))
+	}
+	context.WriteString("当前问题：")
+	context.WriteString(query)
+	return context.String()
 }
 
 // handleToolUse 使用原生 Function Calling 执行工具循环。

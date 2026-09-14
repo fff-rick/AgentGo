@@ -58,11 +58,24 @@ func TestMilvusIntegration(t *testing.T) {
 	if err := client.Insert(ctx, "", []VectorRecord{record}); err != nil {
 		t.Fatal(err)
 	}
-	results, err := client.Search(ctx, "", []float32{1, 0, 0, 0}, 1)
+	record.Content = "milvus integration updated"
+	if err := client.Insert(ctx, "", []VectorRecord{record}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.Search(ctx, "", []float32{1, 0, 0, 0}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 || results[0].ID != id || results[0].Metadata["kind"] != "test" {
+	matches := 0
+	for _, result := range results {
+		if result.ID == id {
+			matches++
+			if result.Content != record.Content {
+				t.Fatalf("upsert kept stale content: %+v", result)
+			}
+		}
+	}
+	if matches != 1 {
 		t.Fatalf("unexpected search result: %+v", results)
 	}
 	if err := client.Delete(ctx, "", []string{id}); err != nil {

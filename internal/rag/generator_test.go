@@ -13,14 +13,16 @@ import (
 )
 
 type streamingLLMClient struct {
-	events []llm.StreamEvent
+	events   []llm.StreamEvent
+	requests []*model.LLMRequest
 }
 
-func (streamingLLMClient) Chat(context.Context, *model.LLMRequest) (*model.LLMResponse, error) {
+func (*streamingLLMClient) Chat(context.Context, *model.LLMRequest) (*model.LLMResponse, error) {
 	panic("synchronous Chat must not be used for answer generation")
 }
 
-func (c streamingLLMClient) ChatStream(context.Context, *model.LLMRequest) (<-chan llm.StreamEvent, error) {
+func (c *streamingLLMClient) ChatStream(_ context.Context, req *model.LLMRequest) (<-chan llm.StreamEvent, error) {
+	c.requests = append(c.requests, req)
 	stream := make(chan llm.StreamEvent, len(c.events))
 	for _, event := range c.events {
 		stream <- event
@@ -29,11 +31,11 @@ func (c streamingLLMClient) ChatStream(context.Context, *model.LLMRequest) (<-ch
 	return stream, nil
 }
 
-func (streamingLLMClient) Name() string                 { return "streaming" }
-func (streamingLLMClient) Healthy(context.Context) bool { return true }
+func (*streamingLLMClient) Name() string                 { return "streaming" }
+func (*streamingLLMClient) Healthy(context.Context) bool { return true }
 
 func TestGeneratorEmitsIncrementalAnswer(t *testing.T) {
-	client := streamingLLMClient{events: []llm.StreamEvent{
+	client := &streamingLLMClient{events: []llm.StreamEvent{
 		{Reasoning: "思考"},
 		{Content: "流式"},
 		{Content: "回答"},
@@ -49,12 +51,16 @@ func TestGeneratorEmitsIncrementalAnswer(t *testing.T) {
 	ctx := observe.WithEmitter(context.Background(), func(event observe.Event) {
 		emitted = append(emitted, event)
 	})
-	answer, err := generator.Generate(ctx, "query", []model.Reference{{DocID: "doc", Content: "content", Score: 0.9}})
+	history := []model.LLMMessage{{Role: "user", Content: "previous question"}, {Role: "assistant", Content: "previous answer"}}
+	answer, err := generator.Generate(ctx, "query", []model.Reference{{DocID: "doc", Content: "content", Score: 0.9}}, history)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if answer != "流式回答" {
 		t.Fatalf("answer = %q, want 流式回答", answer)
+	}
+	if len(client.requests) != 1 || len(client.requests[0].Messages) != 4 || client.requests[0].Messages[1].Content != "previous question" {
+		t.Fatalf("history missing from generator request: %+v", client.requests)
 	}
 	if len(emitted) != 3 || emitted[0].Type != observe.TypeReasoningDelta ||
 		emitted[1].Type != observe.TypeAnswerDelta || emitted[2].Type != observe.TypeAnswerDelta {

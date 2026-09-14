@@ -12,7 +12,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/enterprise/ai-agent-go/internal/etl"
@@ -55,7 +54,7 @@ func (h *DocumentHandler) Upload(c *gin.Context) {
 	}
 
 	doc := &model.Document{
-		ID: uuid.NewString(), Title: req.Title, Content: req.Content,
+		Title: req.Title, Content: req.Content,
 		ContentType: req.ContentType, Tags: req.Tags, Metadata: req.Metadata,
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
@@ -104,7 +103,7 @@ func (h *DocumentHandler) ImportMarkdown(c *gin.Context) {
 		title = strings.TrimSuffix(filepath.Base(header.Filename), ext)
 	}
 	doc := &model.Document{
-		ID: uuid.NewString(), Title: title, Content: string(content), ContentType: "markdown",
+		Title: title, Content: string(content), ContentType: "markdown",
 		Metadata:  map[string]string{"source_file": filepath.Base(header.Filename)},
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}

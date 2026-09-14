@@ -2,10 +2,11 @@ package etl
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"strconv"
 	"time"
 
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/enterprise/ai-agent-go/internal/embedding"
@@ -47,6 +48,7 @@ func NewPipeline(parser Parser, chunker *Chunker, vectorDB vectordb.VectorDB, em
 // ProcessDocument 处理单个文档：解析 → 分块 → 向量化 → 入库
 func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*model.DocumentResponse, error) {
 	startTime := time.Now()
+	doc.ID = DocumentID(doc.ContentType, doc.Content)
 	p.logger.Info("开始处理文档",
 		zap.String("doc_id", doc.ID),
 		zap.String("title", doc.Title),
@@ -81,9 +83,8 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 
 	records := make([]vectordb.VectorRecord, 0, len(parsedChunks))
 	keywordChunks := make([]model.DocumentChunk, 0, len(parsedChunks))
-	chunkIDs := make([]string, 0, len(parsedChunks))
 	for i, chunk := range parsedChunks {
-		chunkID := uuid.New().String()
+		chunkID := stableChunkID(doc.ID, chunk.ChunkIndex)
 		record := vectordb.VectorRecord{
 			ID:        chunkID,
 			Content:   chunk.Content,
@@ -95,25 +96,21 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 			},
 		}
 		records = append(records, record)
-		chunkIDs = append(chunkIDs, chunkID)
 		keywordChunks = append(keywordChunks, model.DocumentChunk{
 			ID: chunkID, DocID: doc.ID, Content: chunk.Content,
 			ChunkIndex: chunk.ChunkIndex, CreatedAt: time.Now(),
 		})
 	}
 
-	if err := p.vectorDB.Insert(ctx, "", records); err != nil {
-		p.logger.Error("向量入库失败", zap.Error(err))
-		return nil, fmt.Errorf("向量入库失败: %w", err)
-	}
 	if p.indexer != nil {
 		if err := p.indexer.IndexDocument(ctx, doc, keywordChunks); err != nil {
 			p.logger.Error("关键词索引入库失败", zap.Error(err))
-			if cleanupErr := p.vectorDB.Delete(ctx, "", chunkIDs); cleanupErr != nil {
-				p.logger.Error("回滚 Milvus 文档分块失败", zap.Error(cleanupErr))
-			}
 			return nil, fmt.Errorf("关键词索引入库失败: %w", err)
 		}
+	}
+	if err := p.vectorDB.Insert(ctx, "", records); err != nil {
+		p.logger.Error("向量入库失败，可重复导入修复", zap.Error(err))
+		return nil, fmt.Errorf("向量入库失败: %w", err)
 	}
 
 	elapsed := time.Since(startTime)
@@ -130,6 +127,17 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 		ChunkCount: len(parsedChunks),
 		CreatedAt:  time.Now(),
 	}, nil
+}
+
+// DocumentID makes importing identical content idempotent across all entry points.
+func DocumentID(contentType, content string) string {
+	sum := sha256.Sum256([]byte(contentType + "\x00" + content))
+	return fmt.Sprintf("doc-%x", sum)
+}
+
+func stableChunkID(docID string, index int) string {
+	sum := sha256.Sum256([]byte(docID + "\x00" + strconv.Itoa(index)))
+	return fmt.Sprintf("chunk-%x", sum)
 }
 
 // ProcessBatch 批量处理文档
