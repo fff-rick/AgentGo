@@ -3,6 +3,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/enterprise/ai-agent-go/internal/agent"
+	"github.com/enterprise/ai-agent-go/internal/agentcontext"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/observe"
@@ -21,15 +23,15 @@ import (
 // ChatHandler 对话请求处理器
 type ChatHandler struct {
 	orchestrator *agent.Orchestrator
-	memManager   *memory.Manager
+	sessions     memory.SessionManager
 	logger       *zap.Logger
 }
 
 // NewChatHandler 创建对话处理器
-func NewChatHandler(orchestrator *agent.Orchestrator, memManager *memory.Manager, logger *zap.Logger) *ChatHandler {
+func NewChatHandler(orchestrator *agent.Orchestrator, sessions memory.SessionManager, logger *zap.Logger) *ChatHandler {
 	return &ChatHandler{
 		orchestrator: orchestrator,
-		memManager:   memManager,
+		sessions:     sessions,
 		logger:       logger,
 	}
 }
@@ -42,10 +44,9 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "请求参数错误: "+err.Error())
 		return
 	}
-
-	// 如果未提供 SessionID，自动生成
-	if req.SessionID == "" {
-		req.SessionID = uuid.New().String()
+	if _, err := h.sessions.GetSession(c.Request.Context(), req.SessionID); err != nil {
+		h.writeChatError(c, err)
+		return
 	}
 
 	h.logger.Info("收到对话请求",
@@ -58,7 +59,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	resp, err := h.orchestrator.ProcessMessage(ctx, &req)
 	if err != nil {
 		h.logger.Error("对话处理失败", zap.Error(err))
-		common.Fail(c, http.StatusInternalServerError, common.ErrInternal(err))
+		h.writeChatError(c, err)
 		return
 	}
 
@@ -74,9 +75,9 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "请求参数错误: "+err.Error())
 		return
 	}
-
-	if req.SessionID == "" {
-		req.SessionID = uuid.New().String()
+	if _, err := h.sessions.GetSession(c.Request.Context(), req.SessionID); err != nil {
+		h.writeChatError(c, err)
+		return
 	}
 
 	h.logger.Info("收到流式对话请求",
@@ -115,6 +116,17 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 	resp.MessageID = uuid.New().String()
 	h.writeSSE(c.Writer, "done", resp)
 	flusher.Flush()
+}
+
+func (*ChatHandler) writeChatError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, memory.ErrSessionNotFound):
+		common.FailWithCode(c, http.StatusNotFound, common.ErrCodeNotFound, memory.ErrSessionNotFound.Error())
+	case errors.Is(err, agentcontext.ErrContextTooLarge):
+		common.FailWithCode(c, http.StatusRequestEntityTooLarge, common.ErrCodeInvalidParam, err.Error())
+	default:
+		common.Fail(c, http.StatusInternalServerError, common.ErrInternal(err))
+	}
 }
 
 // writeSSE 写入一条 SSE 事件

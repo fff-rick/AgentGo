@@ -10,6 +10,11 @@ type ChatRequest struct {
 	Metadata  map[string]string `json:"metadata,omitempty"`            // 扩展元数据
 }
 
+// CreateSessionRequest 显式创建一个绑定用户的会话。
+type CreateSessionRequest struct {
+	User UserInfo `json:"user" binding:"required"`
+}
+
 // ChatOptions 对话可选参数
 type ChatOptions struct {
 	Model       string   `json:"model,omitempty"`       // 指定模型

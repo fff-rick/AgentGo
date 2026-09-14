@@ -15,3 +15,16 @@ llm:
 
 agent:
   tool_model: qwen-tools
+
+memory:
+  session_ttl: 720h
+  semantic_collection: semantic_memory_v1
+  semantic_top_k: 5
+  extraction_timeout: 10s
+  extraction_min_importance: 0.7
+  extraction_max_items: 5
+
+context:
+  max_input_tokens: 30000
+  recent_messages: 20
+  summary_max_tokens: 2000

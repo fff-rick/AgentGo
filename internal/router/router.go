@@ -11,7 +11,7 @@ import (
 )
 
 // Register 注册所有 HTTP 路由和中间件
-func Register(engine *gin.Engine, chatH *handler.ChatHandler, docH *handler.DocumentHandler, healthH *handler.HealthHandler) {
+func Register(engine *gin.Engine, chatH *handler.ChatHandler, sessionH *handler.SessionHandler, docH *handler.DocumentHandler, healthH *handler.HealthHandler) {
 	// 全局中间件
 	engine.Use(
 		requestIDMiddleware(),
@@ -28,6 +28,7 @@ func Register(engine *gin.Engine, chatH *handler.ChatHandler, docH *handler.Docu
 		// 对话接口
 		v1.POST("/chat", chatH.Chat)
 		v1.POST("/chat/stream", chatH.ChatStream)
+		v1.POST("/sessions", sessionH.Create)
 
 		// 文档接口
 		v1.POST("/documents", docH.Upload)

@@ -230,9 +230,11 @@ var sessionSequence uint64
 
 func execute(ctx context.Context, client *http.Client, endpoint string, tc testCase, run int) (caseResult, error) {
 	result := caseResult{ID: tc.ID, Category: tc.Category, Run: run}
-	sessionID := tc.SessionID
-	if sessionID == "" {
-		sessionID = fmt.Sprintf("benchmark-%s-%d-%d", tc.ID, run, atomic.AddUint64(&sessionSequence, 1))
+	userID := fmt.Sprintf("benchmark-%d", atomic.AddUint64(&sessionSequence, 1))
+	sessionID, err := createBenchmarkSession(ctx, client, strings.TrimSuffix(endpoint, "/chat")+"/sessions", userID)
+	if err != nil {
+		result.Failures = []string{err.Error()}
+		return result, err
 	}
 	messages := tc.Turns
 	if len(messages) == 0 {
@@ -254,6 +256,32 @@ func execute(ctx context.Context, client *http.Client, endpoint string, tc testC
 	result.Failures = evaluate(tc.Expected, env.Data, result.LatencyMS, &result)
 	result.Passed = len(result.Failures) == 0
 	return result, nil
+}
+
+func createBenchmarkSession(ctx context.Context, client *http.Client, endpoint, userID string) (string, error) {
+	body, _ := json.Marshal(map[string]any{"user": map[string]string{"user_id": userID, "display_name": userID}})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		Data struct {
+			SessionID string `json:"session_id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK || payload.Data.SessionID == "" {
+		return "", fmt.Errorf("create session: HTTP %d", resp.StatusCode)
+	}
+	return payload.Data.SessionID, nil
 }
 
 func sendChat(ctx context.Context, client *http.Client, endpoint string, payload chatRequest) (envelope, error) {

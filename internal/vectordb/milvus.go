@@ -146,6 +146,11 @@ func (c *MilvusClient) Insert(ctx context.Context, collectionName string, record
 }
 
 func (c *MilvusClient) Search(ctx context.Context, collectionName string, vector []float32, topK int) ([]SearchResult, error) {
+	return c.SearchWithFilter(ctx, collectionName, vector, topK, "")
+}
+
+// SearchWithFilter 在 Milvus 服务端应用标量过滤，避免跨用户召回后再本地过滤。
+func (c *MilvusClient) SearchWithFilter(ctx context.Context, collectionName string, vector []float32, topK int, filter string) ([]SearchResult, error) {
 	if len(vector) != c.dimension {
 		return nil, fmt.Errorf("查询向量维度为 %d，期望 %d", len(vector), c.dimension)
 	}
@@ -157,13 +162,17 @@ func (c *MilvusClient) Search(ctx context.Context, collectionName string, vector
 		return nil, err
 	}
 
-	sets, err := c.client.Search(ctx, milvusclient.NewSearchOption(
+	option := milvusclient.NewSearchOption(
 		collectionName,
 		topK,
 		[]entity.Vector{entity.FloatVector(vector)},
 	).WithANNSField(embeddingField).
 		WithOutputFields(contentField, metadataField).
-		WithConsistencyLevel(entity.ClStrong))
+		WithConsistencyLevel(entity.ClStrong)
+	if filter != "" {
+		option.WithFilter(filter)
+	}
+	sets, err := c.client.Search(ctx, option)
 	if err != nil {
 		return nil, fmt.Errorf("Milvus search 失败: %w", err)
 	}

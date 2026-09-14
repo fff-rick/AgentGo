@@ -35,6 +35,10 @@ func TestEvaluate(t *testing.T) {
 func TestExecuteMultiTurn(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/sessions" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"code": 0, "data": map[string]string{"session_id": "session-1"}})
+			return
+		}
 		var request chatRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)

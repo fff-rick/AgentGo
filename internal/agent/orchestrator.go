@@ -1,270 +1,31 @@
-// Package agent 提供 AI Agent 的编排和推理能力。
-// 包含 Function Calling、Planner 和 Reflection 等 Agent 策略。
+// Package agent keeps compatibility adapters and optional Agent behaviors.
 package agent
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"time"
 
-	"go.uber.org/zap"
-
-	"github.com/enterprise/ai-agent-go/internal/config"
-	"github.com/enterprise/ai-agent-go/internal/intent"
-	"github.com/enterprise/ai-agent-go/internal/llm"
-	"github.com/enterprise/ai-agent-go/internal/memory"
+	"github.com/enterprise/ai-agent-go/internal/harness"
 	"github.com/enterprise/ai-agent-go/internal/model"
-	"github.com/enterprise/ai-agent-go/internal/observe"
-	"github.com/enterprise/ai-agent-go/internal/rag"
-	"github.com/enterprise/ai-agent-go/internal/tool"
 )
 
-// OrchestratorDeps Agent 编排器的依赖注入容器
-type OrchestratorDeps struct {
-	ModelRouter      *llm.Router
-	MemoryManager    *memory.Manager
-	ToolRouter       *tool.Router
-	IntentRecognizer *intent.Recognizer
-	Retriever        *rag.Retriever
-	Reranker         *rag.Reranker
-	Generator        *rag.Generator
-	Config           config.AgentConfig
-	RAGConfig        config.RAGConfig
-	Logger           *zap.Logger
-}
-
-// Orchestrator Agent 编排器。
-// 作为整个 Agent 系统的入口，负责：
-// 1. 意图识别 → 确定处理策略
-// 2. 根据意图选择合适的 Agent（Function Calling / Planner / 直接回复）
-// 3. 管理上下文记忆
-// 4. 编排 RAG 检索和工具调用
+// Orchestrator is a compatibility adapter. Agent lifecycle and decisions live
+// in AgentHarness and AgentLoop respectively.
 type Orchestrator struct {
-	deps       OrchestratorDeps
-	reactAgent *ReActAgent
-	planner    *PlannerAgent
-	reflector  *ReflectionAgent
+	harness *harness.AgentHarness
 }
 
-// NewOrchestrator 创建 Agent 编排器并初始化所有子 Agent
-func NewOrchestrator(deps OrchestratorDeps) *Orchestrator {
-	o := &Orchestrator{deps: deps}
-
-	o.reactAgent = NewReActAgent(
-		deps.ModelRouter,
-		deps.ToolRouter,
-		deps.Config.MaxIterations,
-		deps.Config.ToolModel,
-		deps.Logger,
-	)
-
-	o.planner = NewPlannerAgent(
-		deps.ModelRouter,
-		deps.ToolRouter,
-		deps.Logger,
-	)
-
-	o.reflector = NewReflectionAgent(
-		deps.ModelRouter,
-		deps.Logger,
-	)
-
-	return o
+func NewOrchestrator(h *harness.AgentHarness) *Orchestrator {
+	return &Orchestrator{harness: h}
 }
 
-// ProcessMessage 处理用户消息的完整流程：
-// 意图识别 → 加载上下文 → 策略路由 → 执行 Agent → 保存记忆 → 返回结果
 func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatRequest) (*model.ChatResponse, error) {
-	startTime := time.Now()
-
-	// 1. 意图识别
-	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "intent", Message: "正在识别请求意图"})
-	intentResult, err := o.deps.IntentRecognizer.Recognize(ctx, req.Message)
-	if err != nil {
-		o.deps.Logger.Warn("意图识别失败，使用默认策略", zap.Error(err))
-		intentResult = &model.IntentResult{Intent: "chat", Confidence: 0.5}
-	}
-	observe.Emit(ctx, observe.Event{Type: observe.TypeIntent, Stage: "intent", Intent: intentResult.Intent, Confidence: intentResult.Confidence, Message: "意图识别完成"})
-
-	// 2. 加载历史上下文
-	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "memory", Message: "正在加载会话上下文"})
-	history, err := o.deps.MemoryManager.LoadContext(ctx, req.SessionID, 10)
-	if err != nil {
-		o.deps.Logger.Warn("加载上下文失败", zap.Error(err))
-		history = nil
-	}
-
-	// 3. 根据意图路由到对应的处理策略
-	var answer string
-	var toolCalls []model.ToolCallInfo
-	var steps []model.AgentStep
-	var references []model.Reference
-	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "route", Message: routeMessage(intentResult.Intent)})
-
-	switch intentResult.Intent {
-	case intent.IntentRAGQuery:
-		answer, references, err = o.handleRAGQuery(ctx, req.Message, history)
-	case intent.IntentToolUse:
-		answer, toolCalls, steps, err = o.handleToolUse(ctx, req.Message, history, intentResult.RequiredTools)
-	case intent.IntentComplexTask:
-		answer, toolCalls, steps, err = o.handleComplexTask(ctx, req.Message, history)
-	default:
-		answer, err = o.handleChat(ctx, req.Message, history)
-	}
-
+	result, err := o.harness.Run(ctx, &harness.RunRequest{SessionID: req.SessionID, Message: req.Message})
 	if err != nil {
 		return nil, err
 	}
-	if len(references) > 0 {
-		observe.Emit(ctx, observe.Event{Type: observe.TypeReferences, Stage: "rag", Message: fmt.Sprintf("检索到 %d 条相关引用", len(references)), References: references})
-	}
-
-	// 4. 反思改进（如果启用）
-	if o.deps.Config.EnableReflection && len(answer) > 0 {
-		observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "reflection", Message: "正在检查答案质量"})
-		improved, reflectErr := o.reflector.Reflect(ctx, req.Message, answer)
-		if reflectErr == nil && improved != "" {
-			answer = improved
-		}
-	}
-	// 5. 保存本轮对话到记忆
-	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "memory", Message: "正在保存会话记忆"})
-	_ = o.deps.MemoryManager.SaveMessage(ctx, req.SessionID, "user", req.Message)
-	_ = o.deps.MemoryManager.SaveMessage(ctx, req.SessionID, "assistant", answer)
-	observe.Emit(ctx, observe.Event{Type: observe.TypeAnswer, Stage: "answer", Message: answer})
-
-	resp := &model.ChatResponse{
-		SessionID:  req.SessionID,
-		Content:    answer,
-		ToolCalls:  toolCalls,
-		Steps:      steps,
-		References: references,
-		CreatedAt:  time.Now(),
-	}
-
-	o.deps.Logger.Info("消息处理完成",
-		zap.String("intent", intentResult.Intent),
-		zap.Duration("elapsed", time.Since(startTime)),
-	)
-
-	return resp, nil
-}
-
-func routeMessage(intentName string) string {
-	switch intentName {
-	case intent.IntentRAGQuery:
-		return "正在进行知识库检索与回答生成"
-	case intent.IntentToolUse:
-		return "正在执行原生 Function Calling"
-	case intent.IntentComplexTask:
-		return "正在规划并执行复杂任务"
-	default:
-		return "正在生成对话答案"
-	}
-}
-
-// handleChat 处理普通对话
-func (o *Orchestrator) handleChat(ctx context.Context, message string, history []model.LLMMessage) (string, error) {
-	messages := append(history, model.LLMMessage{
-		Role:    "user",
-		Content: message,
-	})
-
-	req := &model.LLMRequest{Messages: messages}
-	stream, err := o.deps.ModelRouter.ChatStream(ctx, req)
-	if err != nil {
-		return "", err
-	}
-	var answer strings.Builder
-	for event := range stream {
-		if event.Err != nil {
-			return "", event.Err
-		}
-		if event.Reasoning != "" {
-			observe.Emit(ctx, observe.Event{Type: observe.TypeReasoningDelta, Stage: "model", Message: event.Reasoning})
-		}
-		if event.Content != "" {
-			answer.WriteString(event.Content)
-			observe.Emit(ctx, observe.Event{Type: observe.TypeAnswerDelta, Stage: "answer", Message: event.Content})
-		}
-	}
-	return answer.String(), nil
-}
-
-// handleRAGQuery 处理知识库查询：检索 → 重排 → 生成
-func (o *Orchestrator) handleRAGQuery(ctx context.Context, query string, history []model.LLMMessage) (string, []model.Reference, error) {
-	// 检索
-	topK := o.deps.RAGConfig.TopK
-	if topK <= 0 {
-		topK = 5
-	}
-	retrievalQuery := contextualRAGQuery(query, history)
-	refs, err := o.deps.Retriever.Retrieve(ctx, retrievalQuery, topK)
-	if err != nil {
-		o.deps.Logger.Warn("RAG 检索失败，降级为直接回答", zap.Error(err))
-		answer, chatErr := o.handleChat(ctx, query, history)
-		return answer, nil, chatErr
-	}
-
-	// 重排序
-	if o.deps.RAGConfig.EnableRerank {
-		refs, _ = o.deps.Reranker.Rerank(ctx, retrievalQuery, refs)
-	}
-	if len(refs) == 0 {
-		observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "rag", Message: "未找到达到相关性阈值的知识库内容"})
-	}
-
-	// 生成答案
-	answer, err := o.deps.Generator.Generate(ctx, query, refs, history)
-	if err != nil {
-		return "", nil, err
-	}
-
-	return answer, refs, nil
-}
-
-func contextualRAGQuery(query string, history []model.LLMMessage) string {
-	if len(history) == 0 {
-		return query
-	}
-	start := len(history) - 4
-	if start < 0 {
-		start = 0
-	}
-	var context strings.Builder
-	context.WriteString("对话上下文：\n")
-	for _, message := range history[start:] {
-		if message.Role != "user" && message.Role != "assistant" {
-			continue
-		}
-		content := []rune(strings.TrimSpace(message.Content))
-		if len(content) > 500 {
-			content = content[:500]
-		}
-		fmt.Fprintf(&context, "%s：%s\n", message.Role, string(content))
-	}
-	context.WriteString("当前问题：")
-	context.WriteString(query)
-	return context.String()
-}
-
-// handleToolUse 使用原生 Function Calling 执行工具循环。
-func (o *Orchestrator) handleToolUse(ctx context.Context, message string, history []model.LLMMessage, requiredTools []string) (string, []model.ToolCallInfo, []model.AgentStep, error) {
-	result, err := o.reactAgent.RunWithRequiredTools(ctx, message, history, requiredTools)
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("ReAct Agent 执行失败: %w", err)
-	}
-	return result.Answer, result.ToolCalls, result.Steps, nil
-}
-
-// handleComplexTask 处理复杂任务：先规划再逐步执行
-func (o *Orchestrator) handleComplexTask(ctx context.Context, message string, history []model.LLMMessage) (string, []model.ToolCallInfo, []model.AgentStep, error) {
-	result, err := o.planner.Execute(ctx, message, history)
-	if err != nil {
-		// 降级到 ReAct
-		o.deps.Logger.Warn("规划执行失败，降级到 ReAct", zap.Error(err))
-		return o.handleToolUse(ctx, message, history, nil)
-	}
-	return result.Answer, result.ToolCalls, result.Steps, nil
+	return &model.ChatResponse{
+		SessionID: req.SessionID, Content: result.Answer, ToolCalls: result.ToolCalls,
+		Steps: result.Steps, References: result.References, CreatedAt: time.Now(),
+	}, nil
 }

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestApplyModelEnv(t *testing.T) {
 	t.Setenv("APP_LLM_BASE_URL", "http://localhost:11434/")
@@ -49,5 +52,8 @@ func TestLoadMultiModelRoutingConfig(t *testing.T) {
 	}
 	if len(cfg.LLM.Models) != 2 || cfg.LLM.Models[0].Priority != 1 || cfg.LLM.Models[1].Priority != 10 || cfg.Agent.ToolModel != "qwen-tools" {
 		t.Fatalf("unexpected routing config: models=%+v agent=%+v", cfg.LLM.Models, cfg.Agent)
+	}
+	if cfg.Memory.SessionTTL != 720*time.Hour || cfg.Memory.SemanticCollection != "semantic_memory_v1" || cfg.Context.MaxInputTokens != 30000 || cfg.Context.RecentMessages != 20 {
+		t.Fatalf("unexpected memory/context config: memory=%+v context=%+v", cfg.Memory, cfg.Context)
 	}
 }

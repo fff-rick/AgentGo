@@ -17,13 +17,15 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/enterprise/ai-agent-go/internal/agent"
+	"github.com/enterprise/ai-agent-go/internal/agentcontext"
+	"github.com/enterprise/ai-agent-go/internal/agentloop"
 	"github.com/enterprise/ai-agent-go/internal/cache"
 	"github.com/enterprise/ai-agent-go/internal/config"
 	"github.com/enterprise/ai-agent-go/internal/database"
 	"github.com/enterprise/ai-agent-go/internal/embedding"
 	"github.com/enterprise/ai-agent-go/internal/etl"
 	"github.com/enterprise/ai-agent-go/internal/handler"
-	"github.com/enterprise/ai-agent-go/internal/intent"
+	"github.com/enterprise/ai-agent-go/internal/harness"
 	"github.com/enterprise/ai-agent-go/internal/llm"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/rag"
@@ -31,6 +33,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/tool"
 	toolbuiltin "github.com/enterprise/ai-agent-go/internal/tool/builtin"
 	"github.com/enterprise/ai-agent-go/internal/trace"
+	"github.com/enterprise/ai-agent-go/internal/user"
 	"github.com/enterprise/ai-agent-go/internal/vectordb"
 )
 
@@ -104,40 +107,37 @@ func main() {
 	}
 	modelRouter := llm.NewRouter(llmClients, cfg.LLM.Models, cfg.LLM.CircuitBreaker)
 
-	// 记忆管理器
-	shortTermMem := memory.NewShortTermMemory(redisCache, 20)
-	longTermMem := memory.NewLongTermMemory(milvusClient, embeddingClient)
-	memManager := memory.NewManager(shortTermMem, longTermMem)
+	// 用户、会话与长期语义记忆
+	userManager := user.NewManager(redisCache, cfg.Memory.SessionTTL)
+	sessionManager := memory.NewSessionManager(redisCache, userManager, cfg.Memory.SessionTTL)
+	semanticMemory := memory.NewSemanticStore(milvusClient, embeddingClient, cfg.Memory.SemanticCollection)
+	memoryExtractor := memory.NewExtractor(modelRouter, semanticMemory, cfg.Memory.ExtractionTimeout, cfg.Memory.ExtractionMinImportance, cfg.Memory.ExtractionMaxItems)
+	compactor := agentcontext.NewCompactor(modelRouter)
+	contextBuilder := agentcontext.NewBuilder(sessionManager, semanticMemory, compactor, cfg.Context, cfg.Memory.SemanticTopK, logger)
 
 	// 工具系统
 	toolRegistry := tool.NewRegistry()
 	registerBuiltinTools(toolRegistry, cfg.Search, cfg.Postgres, postgresClient, logger)
 	toolRouter := tool.NewRouter(toolRegistry, logger)
 
-	// 意图识别器
-	intentRecognizer := intent.NewRecognizer(modelRouter, logger)
-
-	// RAG 引擎
+	// 知识检索作为普通工具加入统一 Agent Loop
 	retriever := rag.NewRetriever(milvusClient, embeddingClient, redisCache, cfg.RAG.ScoreThreshold, logger, postgresClient)
 	reranker := rag.NewReranker(modelRouter, cfg.RAG.ScoreThreshold, logger)
-	generator := rag.NewGenerator(modelRouter, logger)
+	ragPipeline := rag.NewPipeline(retriever, reranker, cfg.RAG.EnableRerank)
+	toolRegistry.MustRegister(toolbuiltin.NewKnowledgeSearchTool(ragPipeline, cfg.RAG.TopK))
 
-	// ======================== 5. 初始化 Agent 编排器 ========================
-	orchestrator := agent.NewOrchestrator(agent.OrchestratorDeps{
-		ModelRouter:      modelRouter,
-		MemoryManager:    memManager,
-		ToolRouter:       toolRouter,
-		IntentRecognizer: intentRecognizer,
-		Retriever:        retriever,
-		Reranker:         reranker,
-		Generator:        generator,
-		Config:           cfg.Agent,
-		RAGConfig:        cfg.RAG,
-		Logger:           logger,
-	})
+	// ======================== 5. 初始化统一 Agent Harness ========================
+	var hooks []harness.Hook
+	if cfg.Agent.EnableReflection {
+		hooks = append(hooks, agent.NewReflectionAgent(modelRouter, logger))
+	}
+	loop := agentloop.New(modelRouter, toolRouter)
+	agentHarness := harness.New(loop, contextBuilder, sessionManager, memoryExtractor, toolRouter, hooks, cfg.Agent.MaxIterations, cfg.Agent.DefaultTimeout, logger)
+	orchestrator := agent.NewOrchestrator(agentHarness)
 
 	// ======================== 6. 初始化 HTTP 处理器 ========================
-	chatHandler := handler.NewChatHandler(orchestrator, memManager, logger)
+	chatHandler := handler.NewChatHandler(orchestrator, sessionManager, logger)
+	sessionHandler := handler.NewSessionHandler(sessionManager)
 	etlPipeline := etl.NewPipeline(etl.NewDefaultParser(), etl.NewChunker(cfg.RAG.ChunkSize, cfg.RAG.ChunkOverlap), milvusClient, embeddingClient, logger, postgresClient)
 	docHandler := handler.NewDocumentHandler(etlPipeline, logger, postgresClient)
 	healthHandler := handler.NewHealthHandler(redisCache, milvusClient, postgresClient)
@@ -147,7 +147,7 @@ func main() {
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 
-	router.Register(engine, chatHandler, docHandler, healthHandler)
+	router.Register(engine, chatHandler, sessionHandler, docHandler, healthHandler)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),

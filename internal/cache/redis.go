@@ -21,6 +21,8 @@ type Cache interface {
 	LPush(ctx context.Context, key string, values ...interface{}) error
 	LRange(ctx context.Context, key string, start, stop int64) ([]string, error)
 	LTrim(ctx context.Context, key string, start, stop int64) error
+	Expire(ctx context.Context, key string, ttl time.Duration) error
+	Incr(ctx context.Context, key string) (int64, error)
 	Close() error
 	Healthy(ctx context.Context) bool
 }
@@ -89,6 +91,14 @@ func (r *RedisCache) LRange(ctx context.Context, key string, start, stop int64) 
 // LTrim 裁剪列表，只保留指定范围
 func (r *RedisCache) LTrim(ctx context.Context, key string, start, stop int64) error {
 	return r.client.LTrim(ctx, key, start, stop).Err()
+}
+
+func (r *RedisCache) Expire(ctx context.Context, key string, ttl time.Duration) error {
+	return r.client.Expire(ctx, key, ttl).Err()
+}
+
+func (r *RedisCache) Incr(ctx context.Context, key string) (int64, error) {
+	return r.client.Incr(ctx, key).Result()
 }
 
 // Close 关闭 Redis 连接

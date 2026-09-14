@@ -2,6 +2,13 @@ package model
 
 import "time"
 
+// CreateSessionResponse 是创建会话接口的返回数据。
+type CreateSessionResponse struct {
+	SessionID string    `json:"session_id"`
+	UserID    string    `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // ChatResponse 对话响应
 type ChatResponse struct {
 	SessionID  string         `json:"session_id"`
