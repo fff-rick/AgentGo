@@ -58,6 +58,7 @@ func NewHTTPClient(cfg config.ModelConfig, timeout time.Duration) *HTTPClient {
 	}
 	opts := []option.RequestOption{
 		option.WithAPIKey(cfg.APIKey),
+		option.WithHeader("User-Agent", "AgentGo/1.0"),
 		option.WithHTTPClient(&http.Client{Timeout: timeout}),
 	}
 	if baseURL != "" {

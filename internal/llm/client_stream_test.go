@@ -18,6 +18,9 @@ func TestSDKStreamAccumulatesNativeToolCall(t *testing.T) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Errorf("path = %q", r.URL.Path)
 		}
+		if got := r.UserAgent(); got != "AgentGo/1.0" {
+			t.Errorf("User-Agent = %q", got)
+		}
 		var body struct {
 			Model             string `json:"model"`
 			Stream            bool   `json:"stream"`
