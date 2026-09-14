@@ -132,7 +132,8 @@ func main() {
 		hooks = append(hooks, agent.NewReflectionAgent(modelRouter, logger))
 	}
 	loop := agentloop.New(modelRouter, toolRouter)
-	agentHarness := harness.New(loop, contextBuilder, sessionManager, memoryExtractor, toolRouter, hooks, cfg.Agent.MaxIterations, cfg.Agent.DefaultTimeout, logger)
+	planner := agent.NewPlannerAgent(modelRouter, toolRouter, logger)
+	agentHarness := harness.New(loop, planner, contextBuilder, sessionManager, memoryExtractor, toolRouter, hooks, cfg.Agent.MaxIterations, cfg.Agent.DefaultTimeout, logger)
 	orchestrator := agent.NewOrchestrator(agentHarness)
 
 	// ======================== 6. 初始化 HTTP 处理器 ========================

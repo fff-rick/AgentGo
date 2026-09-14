@@ -71,7 +71,7 @@ func NewPlannerAgent(router *llm.Router, toolRouter *tool.Router, logger *zap.Lo
 // Execute 执行复杂任务：生成计划 → 逐步执行 → 汇总结果
 func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model.LLMMessage) (*AgentResult, error) {
 	// 阶段一：生成执行计划
-	plan, err := p.generatePlan(ctx, task)
+	plan, err := p.generatePlan(ctx, task, history)
 	if err != nil {
 		return nil, fmt.Errorf("生成执行计划失败: %w", err)
 	}
@@ -108,6 +108,7 @@ func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model
 				output = fmt.Sprintf("错误: %v", err)
 			} else {
 				output = toolResult.Output
+				result.References = append(result.References, toolResult.References...)
 			}
 
 			callInfo := model.ToolCallInfo{
@@ -145,7 +146,7 @@ func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model
 }
 
 // generatePlan 调用 LLM 生成执行计划
-func (p *PlannerAgent) generatePlan(ctx context.Context, task string) (*Plan, error) {
+func (p *PlannerAgent) generatePlan(ctx context.Context, task string, history []model.LLMMessage) (*Plan, error) {
 	tools := p.toolRouter.ListAvailableToolDetails()
 	definitions := make([]model.FunctionDef, 0, len(tools))
 	for _, candidate := range tools {
@@ -159,13 +160,10 @@ func (p *PlannerAgent) generatePlan(ctx context.Context, task string) (*Plan, er
 	}
 	systemPrompt := fmt.Sprintf(plannerSystemPrompt, toolJSON)
 
-	req := &model.LLMRequest{
-		Messages: []model.LLMMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: task},
-		},
-		Temperature: 0.2,
-	}
+	messages := []model.LLMMessage{{Role: "system", Content: systemPrompt}}
+	messages = append(messages, history...)
+	messages = append(messages, model.LLMMessage{Role: "user", Content: task})
+	req := &model.LLMRequest{Messages: messages, Temperature: 0.2}
 
 	resp, err := p.router.Chat(ctx, req)
 	if err != nil {

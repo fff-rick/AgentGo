@@ -48,6 +48,15 @@ func TestChatEndpointsRejectUnknownSessionBeforeRunningAgent(t *testing.T) {
 			t.Fatalf("path=%s status=%d body=%s", path, recorder.Code, recorder.Body.String())
 		}
 	}
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat", bytes.NewBufferString(`{"session_id":"session","message":"hello","options":{"mode":"auto-detect"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = req
+	handler.Chat(context)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid mode status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
 }
 func (*sessionManagerStub) GetUser(context.Context, string) (*model.UserInfo, error)   { return nil, nil }
 func (*sessionManagerStub) AppendMessage(context.Context, string, model.Message) error { return nil }

@@ -44,6 +44,10 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "请求参数错误: "+err.Error())
 		return
 	}
+	if !validExecutionMode(req.Options) {
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.mode 只支持 agent 或 planner")
+		return
+	}
 	if _, err := h.sessions.GetSession(c.Request.Context(), req.SessionID); err != nil {
 		h.writeChatError(c, err)
 		return
@@ -73,6 +77,10 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 	var req model.ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "请求参数错误: "+err.Error())
+		return
+	}
+	if !validExecutionMode(req.Options) {
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.mode 只支持 agent 或 planner")
 		return
 	}
 	if _, err := h.sessions.GetSession(c.Request.Context(), req.SessionID); err != nil {
@@ -116,6 +124,10 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 	resp.MessageID = uuid.New().String()
 	h.writeSSE(c.Writer, "done", resp)
 	flusher.Flush()
+}
+
+func validExecutionMode(options *model.ChatOptions) bool {
+	return options == nil || options.Mode == "" || options.Mode == model.ExecutionModeAgent || options.Mode == model.ExecutionModePlanner
 }
 
 func (*ChatHandler) writeChatError(c *gin.Context, err error) {

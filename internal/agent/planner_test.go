@@ -62,8 +62,11 @@ func TestPlannerProvidesCompleteToolDefinitions(t *testing.T) {
 	registry.MustRegister(plannerTool{name: "alpha", description: "先展示工具"})
 	agent := NewPlannerAgent(llmRouter, tool.NewRouter(registry, zap.NewNop()), zap.NewNop())
 
-	if _, err := agent.generatePlan(context.Background(), "测试任务"); err != nil {
+	if _, err := agent.generatePlan(context.Background(), "测试任务", []model.LLMMessage{{Role: "system", Content: "会话上下文"}}); err != nil {
 		t.Fatal(err)
+	}
+	if len(client.request.Messages) != 3 || client.request.Messages[1].Content != "会话上下文" {
+		t.Fatalf("planner did not receive built context: %+v", client.request.Messages)
 	}
 
 	const marker = "可用工具定义（JSON）："

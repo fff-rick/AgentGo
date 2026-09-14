@@ -103,7 +103,7 @@ TUI 会实时展示 Agent Loop 阶段、模型显式 reasoning、原生 Function
 /import "~/docs/path with spaces.md"
 ```
 
-文件限制为 UTF-8 编码、`.md`/`.markdown` 后缀且不超过 10 MiB。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/clear` 创建新会话，`Ctrl+C` 退出。TUI 使用 `AGENTGO_USER_ID`（默认 `local-user`）创建会话。也可先通过 API 创建会话，再观察 SSE 事件：
+文件限制为 UTF-8 编码、`.md`/`.markdown` 后缀且不超过 10 MiB。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/plan <任务>` 显式启用 Planner-Executor，`/clear` 创建新会话，`Ctrl+C` 退出。Planner 模式由调用方指定，与意图识别无关。TUI 使用 `AGENTGO_USER_ID`（默认 `local-user`）创建会话。也可先通过 API 创建会话，再观察 SSE 事件：
 
 ```bash
 SESSION_ID=$(curl -s http://localhost:8080/api/v1/sessions \
@@ -207,6 +207,8 @@ docker compose up -d searxng
 | POST | `/api/v1/documents/import` | multipart 上传本地 Markdown，文件字段为 `file` |
 | GET  | `/api/v1/documents/:id` | 查询文档状态 |
 | GET  | `/health` | 健康检查 |
+
+聊天请求可通过 `"options":{"mode":"planner"}` 显式启用 Planner-Executor；省略或使用 `agent` 时进入默认 AgentLoop。
 
 ## 设计亮点
 

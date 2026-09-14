@@ -28,12 +28,17 @@ type ToolRegistry interface {
 	ListToolDefinitions() []model.ToolDef
 }
 
+type PlanningExecutor interface {
+	Execute(context.Context, string, []model.LLMMessage) (*agentloop.Result, error)
+}
+
 type Hook interface {
 	AfterLoop(context.Context, *RunRequest, *RunResult) error
 }
 
 type AgentHarness struct {
 	loop          agentloop.AgentLoop
+	planner       PlanningExecutor
 	contexts      agentcontext.Builder
 	sessions      memory.SessionManager
 	extractor     memory.MemoryExtractor
@@ -48,6 +53,7 @@ type RunRequest struct {
 	SessionID           string
 	Message             string
 	RuntimeInstructions []string
+	Mode                string
 }
 
 type RunResult struct {
@@ -58,13 +64,16 @@ type RunResult struct {
 	RunID      string
 }
 
-func New(loop agentloop.AgentLoop, contexts agentcontext.Builder, sessions memory.SessionManager, extractor memory.MemoryExtractor, tools ToolRegistry, hooks []Hook, maxIterations int, timeout time.Duration, logger *zap.Logger) *AgentHarness {
-	return &AgentHarness{loop: loop, contexts: contexts, sessions: sessions, extractor: extractor, tools: tools, hooks: hooks, maxIterations: maxIterations, timeout: timeout, logger: logger}
+func New(loop agentloop.AgentLoop, planner PlanningExecutor, contexts agentcontext.Builder, sessions memory.SessionManager, extractor memory.MemoryExtractor, tools ToolRegistry, hooks []Hook, maxIterations int, timeout time.Duration, logger *zap.Logger) *AgentHarness {
+	return &AgentHarness{loop: loop, planner: planner, contexts: contexts, sessions: sessions, extractor: extractor, tools: tools, hooks: hooks, maxIterations: maxIterations, timeout: timeout, logger: logger}
 }
 
 func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (*RunResult, error) {
 	if req == nil || req.SessionID == "" || req.Message == "" {
 		return nil, fmt.Errorf("session_id 和 message 不能为空")
+	}
+	if req.Mode != "" && req.Mode != model.ExecutionModeAgent && req.Mode != model.ExecutionModePlanner {
+		return nil, fmt.Errorf("不支持的执行模式 %q", req.Mode)
 	}
 	if h.timeout > 0 {
 		var cancel context.CancelFunc
@@ -85,13 +94,25 @@ func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (*RunResult, er
 		return nil, err
 	}
 	state := &agentloop.RunState{RunID: uuid.NewString(), UserID: session.UserID, SessionID: session.ID, Task: req.Message}
-	loopResult, err := h.loop.Run(ctx, agentloop.Input{
-		Messages: agentContext.Messages, Tools: agentContext.Tools, MaxIterations: h.maxIterations,
-		SystemPrompt: agentContext.SystemPrompt, State: state,
-	})
+	var loopResult *agentloop.Result
+	if req.Mode == model.ExecutionModePlanner {
+		if h.planner == nil {
+			return nil, fmt.Errorf("planner-executor 未配置")
+		}
+		observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "planner", Message: "正在规划并执行复杂任务"})
+		history := []model.LLMMessage{{Role: "system", Content: agentContext.SystemPrompt}}
+		history = append(history, withoutCurrentMessage(agentContext.Messages, req.Message)...)
+		loopResult, err = h.planner.Execute(ctx, req.Message, history)
+	} else {
+		loopResult, err = h.loop.Run(ctx, agentloop.Input{
+			Messages: agentContext.Messages, Tools: agentContext.Tools, MaxIterations: h.maxIterations,
+			SystemPrompt: agentContext.SystemPrompt, State: state,
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
+	state.Steps = append(state.Steps[:0], loopResult.Steps...)
 	result := &RunResult{
 		Answer: loopResult.Answer, Steps: loopResult.Steps,
 		ToolCalls: loopResult.ToolCalls, References: loopResult.References, RunID: state.RunID,
@@ -117,6 +138,14 @@ func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (*RunResult, er
 	}
 	observe.Emit(ctx, observe.Event{Type: observe.TypeAnswer, Stage: "answer", Message: result.Answer})
 	return result, nil
+}
+
+func withoutCurrentMessage(messages []model.LLMMessage, current string) []model.LLMMessage {
+	end := len(messages)
+	if end > 0 && messages[end-1].Role == "user" && messages[end-1].Content == current {
+		end--
+	}
+	return messages[:end]
 }
 
 var _ ToolRegistry = (*tool.Router)(nil)
