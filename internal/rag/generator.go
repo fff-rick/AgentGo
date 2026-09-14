@@ -36,9 +36,9 @@ const ragSystemPrompt = `你是一个智能知识助手。请根据以下参考�
 4. 回答要准确、简洁、有条理`
 
 // Generate 基于检索到的文档和用户问题生成答案
-func (g *Generator) Generate(ctx context.Context, query string, refs []model.Reference) (string, error) {
+func (g *Generator) Generate(ctx context.Context, query string, refs []model.Reference, history []model.LLMMessage) (string, error) {
 	if len(refs) == 0 {
-		return g.generateWithoutRefs(ctx, query)
+		return g.generateWithoutRefs(ctx, query, history)
 	}
 
 	// 构造参考文档上下文
@@ -52,12 +52,10 @@ func (g *Generator) Generate(ctx context.Context, query string, refs []model.Ref
 
 	userPrompt := fmt.Sprintf("参考文档：\n%s\n\n用户问题：%s", contextText, query)
 
-	req := &model.LLMRequest{
-		Messages: []model.LLMMessage{
-			{Role: "system", Content: ragSystemPrompt},
-			{Role: "user", Content: userPrompt},
-		},
-	}
+	messages := []model.LLMMessage{{Role: "system", Content: ragSystemPrompt}}
+	messages = append(messages, history...)
+	messages = append(messages, model.LLMMessage{Role: "user", Content: userPrompt})
+	req := &model.LLMRequest{Messages: messages}
 
 	answer, err := g.generateStream(ctx, req)
 	if err != nil {
@@ -73,16 +71,14 @@ func (g *Generator) Generate(ctx context.Context, query string, refs []model.Ref
 }
 
 // generateWithoutRefs 在没有检索到相关文档时直接生成回答
-func (g *Generator) generateWithoutRefs(ctx context.Context, query string) (string, error) {
-	req := &model.LLMRequest{
-		Messages: []model.LLMMessage{
-			{
-				Role:    "system",
-				Content: "你是一个智能助手。知识库中没有找到相关信息，请根据你的知识尽可能回答用户问题，并说明回答未基于内部文档。",
-			},
-			{Role: "user", Content: query},
-		},
-	}
+func (g *Generator) generateWithoutRefs(ctx context.Context, query string, history []model.LLMMessage) (string, error) {
+	messages := []model.LLMMessage{{
+		Role:    "system",
+		Content: "你是一个智能助手。知识库中没有找到相关信息，请根据你的知识尽可能回答用户问题，并说明回答未基于内部文档。",
+	}}
+	messages = append(messages, history...)
+	messages = append(messages, model.LLMMessage{Role: "user", Content: query})
+	req := &model.LLMRequest{Messages: messages}
 
 	answer, err := g.generateStream(ctx, req)
 	if err != nil {
