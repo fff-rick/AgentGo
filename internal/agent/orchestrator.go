@@ -20,7 +20,11 @@ func NewOrchestrator(h *harness.AgentHarness) *Orchestrator {
 }
 
 func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatRequest) (*model.ChatResponse, error) {
-	result, err := o.harness.Run(ctx, &harness.RunRequest{SessionID: req.SessionID, Message: req.Message})
+	mode := ""
+	if req.Options != nil {
+		mode = req.Options.Mode
+	}
+	result, err := o.harness.Run(ctx, &harness.RunRequest{SessionID: req.SessionID, Message: req.Message, Mode: mode})
 	if err != nil {
 		return nil, err
 	}

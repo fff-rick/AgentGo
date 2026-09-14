@@ -1,6 +1,11 @@
 // Package model 定义了 AI Agent 系统中所有的数据传输对象（DTO）和领域实体。
 package model
 
+const (
+	ExecutionModeAgent   = "agent"
+	ExecutionModePlanner = "planner"
+)
+
 // ChatRequest 对话请求
 type ChatRequest struct {
 	SessionID string            `json:"session_id" binding:"required"` // 会话 ID
@@ -18,6 +23,7 @@ type CreateSessionRequest struct {
 // ChatOptions 对话可选参数
 type ChatOptions struct {
 	Model       string   `json:"model,omitempty"`       // 指定模型
+	Mode        string   `json:"mode,omitempty"`        // agent（默认）/ planner（显式规划执行）
 	Temperature float64  `json:"temperature,omitempty"` // 温度参数
 	MaxTokens   int      `json:"max_tokens,omitempty"`  // 最大 token 数
 	Tools       []string `json:"tools,omitempty"`       // 允许使用的工具列表

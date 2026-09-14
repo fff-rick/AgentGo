@@ -57,7 +57,7 @@ func TestHarnessDoesNotFailAnswerWhenMemoryExtractionFails(t *testing.T) {
 	loop := &loopStub{}
 	extractor := &extractorStub{err: errors.New("embedding unavailable")}
 	contexts := contextStub{result: &agentcontext.AgentContext{Messages: []model.LLMMessage{{Role: "user", Content: "current"}}}}
-	result, err := New(loop, contexts, sessions, extractor, toolsStub{}, nil, 2, time.Second, zap.NewNop()).Run(context.Background(), &RunRequest{SessionID: "session", Message: "current"})
+	result, err := New(loop, nil, contexts, sessions, extractor, toolsStub{}, nil, 2, time.Second, zap.NewNop()).Run(context.Background(), &RunRequest{SessionID: "session", Message: "current"})
 	if err != nil || result.Answer != "draft" || extractor.calls != 1 {
 		t.Fatalf("result=%+v err=%v calls=%d", result, err, extractor.calls)
 	}
@@ -68,6 +68,17 @@ type loopStub struct{ input agentloop.Input }
 func (l *loopStub) Run(_ context.Context, input agentloop.Input) (*agentloop.Result, error) {
 	l.input = input
 	return &agentloop.Result{Answer: "draft"}, nil
+}
+
+type plannerStub struct {
+	calls   int
+	task    string
+	history []model.LLMMessage
+}
+
+func (p *plannerStub) Execute(_ context.Context, task string, history []model.LLMMessage) (*agentloop.Result, error) {
+	p.calls, p.task, p.history = p.calls+1, task, history
+	return &agentloop.Result{Answer: "planned", Steps: []model.AgentStep{{Type: "action"}}}, nil
 }
 
 type toolsStub struct{ definitions []model.ToolDef }
@@ -89,7 +100,7 @@ func TestHarnessOwnsRunLifecycle(t *testing.T) {
 	contexts := contextStub{result: &agentcontext.AgentContext{
 		SystemPrompt: "system", Messages: []model.LLMMessage{{Role: "user", Content: "previous"}, {Role: "user", Content: "current"}}, Tools: tools.definitions,
 	}}
-	result, err := New(loop, contexts, sessions, extractor, tools, []Hook{hookStub{}}, 5, time.Second, zap.NewNop()).Run(
+	result, err := New(loop, nil, contexts, sessions, extractor, tools, []Hook{hookStub{}}, 5, time.Second, zap.NewNop()).Run(
 		context.Background(), &RunRequest{SessionID: "session", Message: "current"},
 	)
 	if err != nil {
@@ -103,5 +114,26 @@ func TestHarnessOwnsRunLifecycle(t *testing.T) {
 	}
 	if len(sessions.saved) != 2 || sessions.saved[1].Content != "final" || extractor.calls != 1 {
 		t.Fatalf("saved=%+v extractor_calls=%d", sessions.saved, extractor.calls)
+	}
+}
+
+func TestHarnessUsesPlannerOnlyWhenExplicitlyRequested(t *testing.T) {
+	sessions := &sessionsStub{}
+	loop := &loopStub{}
+	planner := &plannerStub{}
+	contexts := contextStub{result: &agentcontext.AgentContext{
+		SystemPrompt: "memory context", Messages: []model.LLMMessage{{Role: "assistant", Content: "previous"}, {Role: "user", Content: "complex task"}},
+	}}
+	result, err := New(loop, planner, contexts, sessions, nil, toolsStub{}, nil, 3, time.Second, zap.NewNop()).Run(
+		context.Background(), &RunRequest{SessionID: "session", Message: "complex task", Mode: model.ExecutionModePlanner},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Answer != "planned" || planner.calls != 1 || loop.input.Messages != nil {
+		t.Fatalf("result=%+v planner=%+v loop=%+v", result, planner, loop.input)
+	}
+	if len(planner.history) != 2 || planner.history[0].Content != "memory context" || planner.history[1].Content != "previous" {
+		t.Fatalf("planner history=%+v", planner.history)
 	}
 }

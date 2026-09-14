@@ -58,7 +58,17 @@ func TestImportMarkdown(t *testing.T) {
 }
 
 func TestStreamReceivesAnswerDeltas(t *testing.T) {
+	var mode string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Options struct {
+				Mode string `json:"mode"`
+			} `json:"options"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		mode = request.Options.Mode
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, content := range []string{"你", "好"} {
 			payload, _ := json.Marshal(observe.Event{Type: observe.TypeAnswerDelta, Message: content})
@@ -69,7 +79,7 @@ func TestStreamReceivesAnswerDeltas(t *testing.T) {
 	defer server.Close()
 
 	events := make(chan streamEvent, 8)
-	stream(context.Background(), server.URL, "session", "query", events)
+	stream(context.Background(), server.URL, "session", "query", "planner", events)
 	var chunks []string
 	for raw := range events {
 		if raw.name != observe.TypeAnswerDelta {
@@ -83,6 +93,9 @@ func TestStreamReceivesAnswerDeltas(t *testing.T) {
 	}
 	if strings.Join(chunks, "") != "你好" {
 		t.Fatalf("answer chunks = %#v, want incremental 你好", chunks)
+	}
+	if mode != "planner" {
+		t.Fatalf("mode=%q, want planner", mode)
 	}
 }
 
