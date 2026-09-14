@@ -140,3 +140,18 @@ func TestHistoryScrollingAndSpinner(t *testing.T) {
 		t.Fatalf("end did not return to latest history: offset=%d view=%q", m.scrollOffset, m.View())
 	}
 }
+
+func TestInputAcceptsSpaces(t *testing.T) {
+	m := &model{}
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("AgentGo")},
+		{Type: tea.KeySpace, Runes: []rune(" ")},
+		{Type: tea.KeyRunes, Runes: []rune("TUI")},
+	} {
+		updated, _ := m.Update(key)
+		m = updated.(*model)
+	}
+	if m.input != "AgentGo TUI" {
+		t.Fatalf("input = %q, want %q", m.input, "AgentGo TUI")
+	}
+}

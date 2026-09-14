@@ -119,8 +119,13 @@ func (m *model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.input = string(runes[:len(runes)-1])
 			}
 		default:
-			if !m.busy && msg.Type == tea.KeyRunes {
-				m.input += string(msg.Runes)
+			if !m.busy {
+				switch msg.Type {
+				case tea.KeyRunes:
+					m.input += string(msg.Runes)
+				case tea.KeySpace:
+					m.input += " "
+				}
 			}
 		}
 	case tea.MouseMsg:
