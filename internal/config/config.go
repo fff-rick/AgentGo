@@ -25,6 +25,8 @@ type Config struct {
 	Agent     AgentConfig     `mapstructure:"agent"`
 	RAG       RAGConfig       `mapstructure:"rag"`
 	Search    SearchConfig    `mapstructure:"search"`
+	Memory    MemoryConfig    `mapstructure:"memory"`
+	Context   ContextConfig   `mapstructure:"context"`
 	Log       LogConfig       `mapstructure:"log"`
 }
 
@@ -109,6 +111,21 @@ type AgentConfig struct {
 	DefaultTimeout   time.Duration `mapstructure:"default_timeout"`   // 单次 Agent 执行超时
 	EnableReflection bool          `mapstructure:"enable_reflection"` // 是否启用反思机制
 	ToolModel        string        `mapstructure:"tool_model"`        // Function Calling 指定的模型名称
+}
+
+type MemoryConfig struct {
+	SessionTTL              time.Duration `mapstructure:"session_ttl"`
+	SemanticCollection      string        `mapstructure:"semantic_collection"`
+	SemanticTopK            int           `mapstructure:"semantic_top_k"`
+	ExtractionTimeout       time.Duration `mapstructure:"extraction_timeout"`
+	ExtractionMinImportance float64       `mapstructure:"extraction_min_importance"`
+	ExtractionMaxItems      int           `mapstructure:"extraction_max_items"`
+}
+
+type ContextConfig struct {
+	MaxInputTokens   int `mapstructure:"max_input_tokens"`
+	RecentMessages   int `mapstructure:"recent_messages"`
+	SummaryMaxTokens int `mapstructure:"summary_max_tokens"`
 }
 
 // RAGConfig 检索增强生成配置
@@ -275,6 +292,17 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.default_timeout", "120s")
 	v.SetDefault("agent.enable_reflection", true)
 	v.SetDefault("agent.tool_model", "")
+
+	// Memory 和上下文默认配置
+	v.SetDefault("memory.session_ttl", "720h")
+	v.SetDefault("memory.semantic_collection", "semantic_memory_v1")
+	v.SetDefault("memory.semantic_top_k", 5)
+	v.SetDefault("memory.extraction_timeout", "10s")
+	v.SetDefault("memory.extraction_min_importance", 0.7)
+	v.SetDefault("memory.extraction_max_items", 5)
+	v.SetDefault("context.max_input_tokens", 30000)
+	v.SetDefault("context.recent_messages", 20)
+	v.SetDefault("context.summary_max_tokens", 2000)
 
 	// RAG 默认配置
 	v.SetDefault("rag.top_k", 5)

@@ -6,8 +6,10 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/enterprise/ai-agent-go/internal/harness"
 	"github.com/enterprise/ai-agent-go/internal/llm"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/observe"
 )
 
 const reflectionPrompt = `你是一个回答质量审查专家。请审查以下回答并进行改进。
@@ -71,4 +73,14 @@ func (r *ReflectionAgent) Reflect(ctx context.Context, question, initialAnswer s
 	)
 
 	return improved, nil
+}
+
+// AfterLoop makes reflection an optional lifecycle hook instead of part of routing.
+func (r *ReflectionAgent) AfterLoop(ctx context.Context, req *harness.RunRequest, result *harness.RunResult) error {
+	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "reflection", Message: "正在检查答案质量"})
+	improved, err := r.Reflect(ctx, req.Message, result.Answer)
+	if err == nil && improved != "" {
+		result.Answer = improved
+	}
+	return err
 }

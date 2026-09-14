@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,14 +35,22 @@ func TestPostgresKeywordSearchAndDatabaseToolIntegration(t *testing.T) {
 	defer client.Close()
 
 	docID, chunkID, now := uuid.NewString(), uuid.NewString(), time.Now()
+	marker := "agentgotest" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	defer client.DB().ExecContext(context.Background(), "DELETE FROM documents WHERE id = $1", docID)
 	doc := &model.Document{ID: docID, Title: "Hybrid Test", ContentType: "text", CreatedAt: now, UpdatedAt: now}
-	chunks := []model.DocumentChunk{{ID: chunkID, DocID: docID, Content: "PostgreSQL 提供混合检索关键词召回", ChunkIndex: 0, CreatedAt: now}}
+	chunks := []model.DocumentChunk{{ID: chunkID, DocID: docID, Content: "PostgreSQL 提供混合检索关键词召回 " + marker, ChunkIndex: 0, CreatedAt: now}}
 	if err := client.IndexDocument(ctx, doc, chunks); err != nil {
 		t.Fatal(err)
 	}
-	refs, err := client.Search(ctx, "混合检索", 5)
-	if err != nil || len(refs) != 1 || refs[0].ChunkID != chunkID {
+	refs, err := client.Search(ctx, marker, 5)
+	found := false
+	for _, ref := range refs {
+		if ref.ChunkID == chunkID {
+			found = true
+			break
+		}
+	}
+	if err != nil || !found {
 		t.Fatalf("Search() refs = %#v, error = %v", refs, err)
 	}
 

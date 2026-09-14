@@ -10,7 +10,7 @@
 |------|---------|------|
 | 语言 | Go 1.22 | 高性能、强类型、原生并发 |
 | Web 框架 | Gin | 高性能 HTTP 框架 |
-| Agent 框架 | 自研 | Function Calling / Planner / Reflection 多模式 |
+| Agent 框架 | 自研 | AgentHarness / AgentLoop / Function Calling / Reflection |
 | 向量数据库 | Milvus | 高性能向量检索 |
 | 缓存 | Redis | 会话管理 & 语义缓存 |
 | 关系数据库 | PostgreSQL | 持久化存储 |
@@ -23,17 +23,14 @@
 │                    API 网关层 (Gin)                    │
 ├──────────────────────────────────────────────────────┤
 │                   Handler 处理层                      │
-│           Chat Handler / Document Handler             │
+│       Session / Chat / Document Handler               │
 ├──────────────────────────────────────────────────────┤
-│                  Agent 编排层                         │
-│    ┌──────────┐  ┌──────────┐  ┌───────────────┐    │
-│    │ Function │  │ Planner  │  │  Reflection   │    │
-│    │  Agent   │  │  Agent   │  │    Agent      │    │
-│    └──────────┘  └──────────┘  └───────────────┘    │
+│             AgentHarness 生命周期管理层               │
+│   Context Builder → AgentLoop → Hooks → Memory       │
 ├──────────────────────────────────────────────────────┤
 │  ┌────────┐ ┌────────┐ ┌────────┐ ┌─────────────┐  │
-│  │  RAG   │ │  Tool  │ │ Memory │ │   Intent    │  │
-│  │ Engine │ │ System │ │ Manager│ │ Recognizer  │  │
+│  │RAG Tool│ │ Tools  │ │3-Layer │ │ Reflection  │  │
+│  │       │ │ System │ │ Memory │ │    Hook     │  │
 │  └────────┘ └────────┘ └────────┘ └─────────────┘  │
 ├──────────────────────────────────────────────────────┤
 │  ┌────────┐ ┌────────┐ ┌────────┐ ┌─────────────┐  │
@@ -51,9 +48,13 @@ internal/
 ├── config/                  # 配置管理
 ├── handler/                 # HTTP 处理器
 ├── router/                  # 路由注册
-├── agent/                   # Agent 编排（Function Calling/Planner/Reflection）
+├── agent/                   # 兼容适配器、Planner 和 Reflection Hook
+├── agentloop/               # 模型自主决策与工具调用循环
+├── harness/                 # 单次 Agent Run 生命周期管理
+├── agentcontext/            # 上下文构建、预算估算与压缩
 ├── rag/                     # RAG 检索增强生成
-├── memory/                  # 记忆管理（短期/长期）
+├── memory/                  # Session / Semantic Memory
+├── user/                    # 无认证用户资料与会话归属
 ├── tool/                    # 工具系统（注册/路由/内置工具）
 ├── intent/                  # 意图识别
 ├── llm/                     # LLM 客户端（多模型路由/熔断）
@@ -95,19 +96,24 @@ make docker-stop
 make tui
 ```
 
-TUI 会实时分类展示意图识别、执行阶段、模型显式 reasoning、原生 Function Calling 及结果、RAG 引用、错误和最终答案，也能直接导入宿主机上的 Markdown 文件：
+TUI 会实时展示 Agent Loop 阶段、模型显式 reasoning、原生 Function Calling 及结果、RAG 引用、错误和最终答案，也能直接导入宿主机上的 Markdown 文件：
 
 ```text
 /import /home/xin/docs/knowledge.md
 /import "~/docs/path with spaces.md"
 ```
 
-文件限制为 UTF-8 编码、`.md`/`.markdown` 后缀且不超过 10 MiB。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/clear` 创建新会话，`Ctrl+C` 退出。也可直接观察 SSE 事件：
+文件限制为 UTF-8 编码、`.md`/`.markdown` 后缀且不超过 10 MiB。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/clear` 创建新会话，`Ctrl+C` 退出。TUI 使用 `AGENTGO_USER_ID`（默认 `local-user`）创建会话。也可先通过 API 创建会话，再观察 SSE 事件：
 
 ```bash
+SESSION_ID=$(curl -s http://localhost:8080/api/v1/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"user":{"user_id":"demo-user","display_name":"Demo"}}' \
+  | jq -r '.data.session_id')
+
 curl -N http://localhost:8080/api/v1/chat/stream \
   -H 'Content-Type: application/json' \
-  -d '{"session_id":"demo","message":"从知识库介绍 AgentGo"}'
+  -d "{\"session_id\":\"$SESSION_ID\",\"message\":\"从知识库介绍 AgentGo\"}"
 ```
 
 流式 LLM 客户端兼容 `reasoning_content`、`reasoning` 和 `thinking` 三种显式推理字段。标准模型没有这些字段时，TUI 仍会展示 Agent 的阶段状态，但不会伪造推理内容。
@@ -119,7 +125,7 @@ docker compose up -d postgres redis milvus-standalone
 make run
 ```
 
-[`config.yaml`](config.yaml) 的 `llm.models` 同时注册 `gpt-5.5` 和本地 `qwen2.5:7b`。未指定模型的模块按 `priority` 选择数值最小的健康模型；`agent.tool_model` 则把 Function Calling 指定给 Qwen。`bge-m3:latest` 继续生成 1024 维向量：
+[`config.yaml`](config.yaml) 的 `llm.models` 同时注册 `gpt-5.5` 和本地 `qwen2.5:7b`。统一 Agent Loop 默认按 `priority` 选择模型，并由该模型自主决定直接回答或调用工具；`agent.tool_model` 仅供兼容的 ReActAgent 使用。`bge-m3:latest` 继续生成 1024 维向量：
 
 ```bash
 # Docker 容器通过 host.docker.internal 访问宿主机 Ollama
@@ -163,6 +169,10 @@ APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 | `APP_SEARCH_SAFE_SEARCH` | `1` | SearXNG 安全搜索级别：0 关闭、1 适中、2 严格 |
 | `APP_SERVER_WRITE_TIMEOUT` | `300s` | 本地模型完整请求的写超时 |
 | `APP_AGENT_ENABLE_REFLECTION` | `false` | 是否额外调用一次模型反思答案 |
+| `APP_MEMORY_SESSION_TTL` | `720h` | 用户、会话和完整原始消息的滑动 TTL |
+| `APP_MEMORY_SEMANTIC_COLLECTION` | `semantic_memory_v1` | 用户隔离的长期语义记忆 collection |
+| `APP_CONTEXT_MAX_INPUT_TOKENS` | `30000` | 触发会话压缩的估算输入预算 |
+| `APP_CONTEXT_RECENT_MESSAGES` | `20` | 压缩后优先保留的最近消息数 |
 
 文档上传会按内容生成稳定的文档和分块 ID，经过分块、Ollama 批量向量化后 Upsert 到 Milvus，同时写入 PostgreSQL 全文索引；重复导入相同内容不会新增重复向量。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。验证 Milvus 数据链路：
 
@@ -190,6 +200,7 @@ docker compose up -d searxng
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
+| POST | `/api/v1/sessions` | 使用客户端提供的用户信息创建会话 |
 | POST | `/api/v1/chat` | 对话（同步） |
 | POST | `/api/v1/chat/stream` | 对话（SSE 流式） |
 | POST | `/api/v1/documents` | 上传文档 |
@@ -201,12 +212,12 @@ docker compose up -d searxng
 
 1. **三态熔断器**：支持 Closed/Open/HalfOpen 三种状态，保护 LLM 调用链路
 2. **多模型路由**：根据任务复杂度智能选择模型，兼顾成本和效果
-3. **原生 Function Calling**：官方 OpenAI Go SDK 驱动，支持并行调用、指定工具、结构化 tool 消息和流式答案
+3. **统一 Agent Loop**：模型可在同一次 Run 中直接回答，或组合调用知识库、搜索、计算和数据库工具
 4. **混合检索**：向量检索 + 关键词检索 + Rerank 重排序
-5. **分层记忆**：短期记忆（Redis）+ 长期记忆（PostgreSQL + Milvus）
+5. **三层记忆**：Redis Session Memory、Milvus Semantic Memory、单次 Run Working Memory，并支持上下文压缩
 6. **工具系统**：基于 Go interface 的插件化工具注册和调度
 7. **优雅关停**：信号监听 + Context 取消传播 + 超时等待
-8. **可观察执行**：SSE 事件流 + Bubble Tea TUI，展示意图、阶段、显式推理、工具和 RAG 引用
+8. **可观察执行**：SSE 事件流 + Bubble Tea TUI，展示 Loop 阶段、显式推理、工具和 RAG 引用
 
 ## Benchmark
 

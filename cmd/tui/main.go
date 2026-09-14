@@ -17,8 +17,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/google/uuid"
-
 	"github.com/enterprise/ai-agent-go/internal/observe"
 )
 
@@ -66,7 +64,16 @@ func main() {
 	if baseURL == "" {
 		baseURL = "http://localhost:8080"
 	}
-	m := &model{baseURL: baseURL, session: uuid.NewString()}
+	userID := strings.TrimSpace(os.Getenv("AGENTGO_USER_ID"))
+	if userID == "" {
+		userID = "local-user"
+	}
+	session, err := createSession(context.Background(), baseURL, userID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	m := &model{baseURL: baseURL, session: session}
 	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -153,8 +160,16 @@ func (m *model) submit() (tea.Model, tea.Cmd) {
 	}
 	m.input = ""
 	if query == "/clear" {
-		m.logs = nil
-		m.session = uuid.NewString()
+		userID := strings.TrimSpace(os.Getenv("AGENTGO_USER_ID"))
+		if userID == "" {
+			userID = "local-user"
+		}
+		session, err := createSession(context.Background(), m.baseURL, userID)
+		if err != nil {
+			m.logs = append(m.logs, errorStyle.Render("创建会话失败: "+err.Error()))
+			return m, nil
+		}
+		m.logs, m.session = nil, session
 		return m, nil
 	}
 	if strings.HasPrefix(query, "/import ") {
@@ -387,6 +402,32 @@ func stream(ctx context.Context, baseURL, session, query string, events chan<- s
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
 		sendError(events, err)
 	}
+}
+
+func createSession(ctx context.Context, baseURL, userID string) (string, error) {
+	body, _ := json.Marshal(map[string]any{"user": map[string]string{"user_id": userID, "display_name": userID}})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/v1/sessions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var envelope struct {
+		Data struct {
+			SessionID string `json:"session_id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&envelope); err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK || envelope.Data.SessionID == "" {
+		return "", fmt.Errorf("创建会话失败: HTTP %d", resp.StatusCode)
+	}
+	return envelope.Data.SessionID, nil
 }
 
 func sendError(events chan<- streamEvent, err error) {

@@ -23,7 +23,7 @@ const (
 )
 
 // 意图识别的 Prompt 模板
-const intentPrompt = `你是一个意图识别引擎。根据用户输入判断其意图类型。
+const intentPrompt = `你是一个意图识别引擎。请结合历史对话和最新用户输入判断当前意图。
 
 可选意图：
 - chat: 日常闲聊、问候、闲谈
@@ -31,10 +31,8 @@ const intentPrompt = `你是一个意图识别引擎。根据用户输入判断�
 - tool_use: 需要调用工具（计算、搜索、数据库查询）才能完成的任务
 - complex_task: 需要多步推理、规划的复杂任务
 
-请以 JSON 格式返回：
-{"intent": "意图类型", "confidence": 0.0-1.0, "entities": {}, "required_tools": []}
-
-用户输入：%s`
+请只返回 JSON：
+{"intent": "意图类型", "confidence": 0.0-1.0, "entities": {}, "required_tools": []}`
 
 // Recognizer 意图识别器
 type Recognizer struct {
@@ -50,23 +48,26 @@ func NewRecognizer(router *llm.Router, logger *zap.Logger) *Recognizer {
 	}
 }
 
-// Recognize 分析用户输入并返回意图识别结果。
-// 使用 LLM 进行意图分类，并提取关键实体信息。
-func (r *Recognizer) Recognize(ctx context.Context, userInput string) (*model.IntentResult, error) {
-	if result := r.fallback(userInput); result.Intent != IntentChat {
-		r.logger.Info("规则意图识别完成",
-			zap.String("intent", result.Intent),
-			zap.Float64("confidence", result.Confidence),
-		)
-		return result, nil
+// Recognize 结合最近的会话上下文分析当前用户输入。
+// 正常路径由 LLM 决定意图；关键词规则仅在模型不可用时降级使用。
+func (r *Recognizer) Recognize(ctx context.Context, userInput string, history []model.LLMMessage) (*model.IntentResult, error) {
+	messages := []model.LLMMessage{{Role: "system", Content: intentPrompt}}
+	if len(history) > 6 {
+		history = history[len(history)-6:]
 	}
-
-	prompt := fmt.Sprintf(intentPrompt, userInput)
-
+	for _, message := range history {
+		if message.Role != "user" && message.Role != "assistant" {
+			continue
+		}
+		content := []rune(strings.TrimSpace(message.Content))
+		if len(content) > 500 {
+			content = content[:500]
+		}
+		messages = append(messages, model.LLMMessage{Role: message.Role, Content: string(content)})
+	}
+	messages = append(messages, model.LLMMessage{Role: "user", Content: userInput})
 	req := &model.LLMRequest{
-		Messages: []model.LLMMessage{
-			{Role: "user", Content: prompt},
-		},
+		Messages:    messages,
 		Temperature: 0.1, // 低温度提高确定性
 		MaxTokens:   200,
 	}

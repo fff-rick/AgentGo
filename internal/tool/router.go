@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/pkg/common"
 )
 
@@ -108,6 +109,18 @@ func (r *Router) ListAvailableToolDetails() []Tool {
 	tools := r.registry.ListTools()
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name() < tools[j].Name() })
 	return tools
+}
+
+// ListToolDefinitions returns the stable function definitions supplied to an AgentLoop.
+func (r *Router) ListToolDefinitions() []model.ToolDef {
+	available := r.ListAvailableToolDetails()
+	definitions := make([]model.ToolDef, 0, len(available))
+	for _, candidate := range available {
+		definitions = append(definitions, model.ToolDef{Type: "function", Function: model.FunctionDef{
+			Name: candidate.Name(), Description: candidate.Description(), Parameters: candidate.Parameters(),
+		}})
+	}
+	return definitions
 }
 
 // ToolCall 工具调用请求
