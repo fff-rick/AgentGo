@@ -164,7 +164,7 @@ APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 | `APP_SERVER_WRITE_TIMEOUT` | `300s` | 本地模型完整请求的写超时 |
 | `APP_AGENT_ENABLE_REFLECTION` | `false` | 是否额外调用一次模型反思答案 |
 
-文档上传会经过分块、Ollama 批量向量化并写入 Milvus，同时将相同 chunk 写入 PostgreSQL 全文索引。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。验证 Milvus 数据链路：
+文档上传会按内容生成稳定的文档和分块 ID，经过分块、Ollama 批量向量化后 Upsert 到 Milvus，同时写入 PostgreSQL 全文索引；重复导入相同内容不会新增重复向量。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。验证 Milvus 数据链路：
 
 ```bash
 make test-milvus

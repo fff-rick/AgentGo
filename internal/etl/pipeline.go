@@ -2,10 +2,11 @@ package etl
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"strconv"
 	"time"
 
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/enterprise/ai-agent-go/internal/embedding"
@@ -47,6 +48,7 @@ func NewPipeline(parser Parser, chunker *Chunker, vectorDB vectordb.VectorDB, em
 // ProcessDocument 处理单个文档：解析 → 分块 → 向量化 → 入库
 func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*model.DocumentResponse, error) {
 	startTime := time.Now()
+	doc.ID = DocumentID(doc.ContentType, doc.Content)
 	p.logger.Info("开始处理文档",
 		zap.String("doc_id", doc.ID),
 		zap.String("title", doc.Title),
@@ -83,7 +85,7 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 	keywordChunks := make([]model.DocumentChunk, 0, len(parsedChunks))
 	chunkIDs := make([]string, 0, len(parsedChunks))
 	for i, chunk := range parsedChunks {
-		chunkID := uuid.New().String()
+		chunkID := stableChunkID(doc.ID, chunk.ChunkIndex)
 		record := vectordb.VectorRecord{
 			ID:        chunkID,
 			Content:   chunk.Content,
@@ -130,6 +132,17 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 		ChunkCount: len(parsedChunks),
 		CreatedAt:  time.Now(),
 	}, nil
+}
+
+// DocumentID makes importing identical content idempotent across all entry points.
+func DocumentID(contentType, content string) string {
+	sum := sha256.Sum256([]byte(contentType + "\x00" + content))
+	return fmt.Sprintf("doc-%x", sum)
+}
+
+func stableChunkID(docID string, index int) string {
+	sum := sha256.Sum256([]byte(docID + "\x00" + strconv.Itoa(index)))
+	return fmt.Sprintf("chunk-%x", sum)
 }
 
 // ProcessBatch 批量处理文档

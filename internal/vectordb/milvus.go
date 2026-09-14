@@ -139,8 +139,8 @@ func (c *MilvusClient) Insert(ctx context.Context, collectionName string, record
 		column.NewColumnFloatVector(embeddingField, c.dimension, vectors),
 		column.NewColumnJSONBytes(metadataField, metadata),
 	)
-	if _, err := c.client.Insert(ctx, option); err != nil {
-		return fmt.Errorf("Milvus insert 失败: %w", err)
+	if _, err := c.client.Upsert(ctx, option); err != nil {
+		return fmt.Errorf("Milvus upsert 失败: %w", err)
 	}
 	return nil
 }
