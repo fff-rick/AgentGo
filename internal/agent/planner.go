@@ -21,13 +21,13 @@ const plannerSystemPrompt = `你是一个任务规划专家。请将用户的复
 1. step: 步骤编号
 2. description: 步骤描述
 3. tool: 需要使用的工具（如不需要工具则为空）
-4. input: 工具输入参数
+4. input: 工具输入参数；必须是符合该工具 parameters JSON Schema 的 JSON 对象
 5. depends_on: 依赖的前置步骤编号列表
 
 请以 JSON 数组格式返回执行计划：
-[{"step": 1, "description": "...", "tool": "...", "input": "...", "depends_on": []}]
+[{"step": 1, "description": "...", "tool": "...", "input": {"参数名": "参数值"}, "depends_on": []}]
 
-可用工具：%s`
+可用工具定义（JSON）：%s`
 
 // Plan 执行计划
 type Plan struct {
@@ -36,11 +36,19 @@ type Plan struct {
 
 // PlanStep 计划中的单个步骤
 type PlanStep struct {
-	Step        int    `json:"step"`
-	Description string `json:"description"`
-	Tool        string `json:"tool"`
-	Input       string `json:"input"`
-	DependsOn   []int  `json:"depends_on"`
+	Step        int             `json:"step"`
+	Description string          `json:"description"`
+	Tool        string          `json:"tool"`
+	Input       json.RawMessage `json:"input"`
+	DependsOn   []int           `json:"depends_on"`
+}
+
+func (s PlanStep) toolInput() string {
+	var legacy string
+	if json.Unmarshal(s.Input, &legacy) == nil {
+		return legacy
+	}
+	return string(s.Input)
 }
 
 // PlannerAgent 规划型 Agent。
@@ -87,12 +95,13 @@ func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model
 			zap.String("description", step.Description),
 		)
 
+		input := step.toolInput()
 		var output string
 		if step.Tool != "" {
 			// 需要使用工具
-			observe.Emit(ctx, observe.Event{Type: observe.TypeToolCall, Stage: "tool", Tool: &model.ToolCallInfo{ToolName: step.Tool, Input: step.Input}})
+			observe.Emit(ctx, observe.Event{Type: observe.TypeToolCall, Stage: "tool", Tool: &model.ToolCallInfo{ToolName: step.Tool, Input: input}})
 			startTime := time.Now()
-			toolResult, err := p.toolRouter.Execute(ctx, step.Tool, step.Input)
+			toolResult, err := p.toolRouter.Execute(ctx, step.Tool, input)
 			elapsed := time.Since(startTime)
 
 			if err != nil {
@@ -103,7 +112,7 @@ func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model
 
 			callInfo := model.ToolCallInfo{
 				ToolName: step.Tool,
-				Input:    step.Input,
+				Input:    input,
 				Output:   output,
 				Duration: elapsed.Milliseconds(),
 			}
@@ -119,7 +128,7 @@ func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model
 			Type:       "action",
 			Content:    step.Description,
 			ToolName:   step.Tool,
-			ToolInput:  step.Input,
+			ToolInput:  input,
 			ToolOutput: output,
 			Timestamp:  time.Now(),
 		})
@@ -137,8 +146,18 @@ func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model
 
 // generatePlan 调用 LLM 生成执行计划
 func (p *PlannerAgent) generatePlan(ctx context.Context, task string) (*Plan, error) {
-	tools := p.toolRouter.ListAvailableTools()
-	systemPrompt := fmt.Sprintf(plannerSystemPrompt, strings.Join(tools, ", "))
+	tools := p.toolRouter.ListAvailableToolDetails()
+	definitions := make([]model.FunctionDef, 0, len(tools))
+	for _, candidate := range tools {
+		definitions = append(definitions, model.FunctionDef{
+			Name: candidate.Name(), Description: candidate.Description(), Parameters: candidate.Parameters(),
+		})
+	}
+	toolJSON, err := json.Marshal(definitions)
+	if err != nil {
+		return nil, fmt.Errorf("序列化工具定义失败: %w", err)
+	}
+	systemPrompt := fmt.Sprintf(plannerSystemPrompt, toolJSON)
 
 	req := &model.LLMRequest{
 		Messages: []model.LLMMessage{
