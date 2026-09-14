@@ -152,10 +152,10 @@ Runner 输出 HTTP/业务成功率、任务通过率、工具准确率、检索 
 
 ## 6. 当前实现边界与推进顺序
 
-Milvus CRUD 和 Ollama embedding 已接入，但关键词检索、搜索和数据库执行仍为占位实现，SSE 也不是真流式。因此建议按以下顺序落地：
+Milvus、Ollama embedding、PostgreSQL 中文分词/BM25、真实搜索、只读数据库工具和 SSE 流式输出均已接入；当前主要缺口是正式 Golden Dataset、成本指标和故障注入基线。因此建议按以下顺序推进：
 
 1. 立即在 CI 运行离线微基准和 smoke runner。
-2. 补齐全文检索后，冻结 RAG 语料快照并启用 Recall/MRR/nDCG 门禁。
+2. 冻结 RAG 语料快照并为 BM25 与混合检索启用 Recall/MRR/nDCG 门禁。
 3. 补齐 token usage、模型名、Agent iterations、intent 和降级原因的响应/trace 字段，使成本和路由评测可观测。
-4. 实现真正流式调用后加入 TTFT 门禁。
+4. 为现有流式调用补充 TTFT 门禁。
 5. 在预发进行 1/5/20/50 并发阶梯压测及故障注入，不在共享生产环境直接压测。

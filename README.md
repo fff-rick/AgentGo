@@ -174,7 +174,7 @@ APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 | `APP_CONTEXT_MAX_INPUT_TOKENS` | `30000` | 触发会话压缩的估算输入预算 |
 | `APP_CONTEXT_RECENT_MESSAGES` | `20` | 压缩后优先保留的最近消息数 |
 
-文档上传会按内容生成稳定的文档和分块 ID，经过分块、Ollama 批量向量化后 Upsert 到 Milvus，同时写入 PostgreSQL 全文索引；重复导入相同内容不会新增重复向量。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。验证 Milvus 数据链路：
+文档上传会按内容生成稳定的文档和分块 ID，经过分块、Ollama 批量向量化后 Upsert 到 Milvus，同时通过纯 Go 中文分词写入 PostgreSQL 倒排词频索引并使用 BM25 排序；重复导入相同内容不会新增重复向量。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。验证 Milvus 数据链路：
 
 ```bash
 make test-milvus
@@ -215,7 +215,7 @@ docker compose up -d searxng
 1. **三态熔断器**：支持 Closed/Open/HalfOpen 三种状态，保护 LLM 调用链路
 2. **多模型路由**：根据任务复杂度智能选择模型，兼顾成本和效果
 3. **统一 Agent Loop**：模型可在同一次 Run 中直接回答，或组合调用知识库、搜索、计算和数据库工具
-4. **混合检索**：向量检索 + 关键词检索 + Rerank 重排序
+4. **混合检索**：Milvus 向量检索 + PostgreSQL 中文分词/BM25 + RRF 融合 + Rerank 重排序
 5. **三层记忆**：Redis Session Memory、Milvus Semantic Memory、单次 Run Working Memory，并支持上下文压缩
 6. **工具系统**：基于 Go interface 的插件化工具注册和调度
 7. **优雅关停**：信号监听 + Context 取消传播 + 超时等待
