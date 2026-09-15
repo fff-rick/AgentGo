@@ -34,6 +34,7 @@ type Retriever struct {
 	vectorDB       vectordb.VectorDB
 	embedder       embedding.Client
 	keywordStore   KeywordSearcher
+	statusStore    documentStatusReader
 	cache          cache.Cache
 	scoreThreshold float64
 	logger         *zap.Logger
@@ -42,6 +43,10 @@ type Retriever struct {
 // KeywordSearcher is implemented by the PostgreSQL document index.
 type KeywordSearcher interface {
 	Search(ctx context.Context, query string, topK int) ([]model.Reference, error)
+}
+
+type documentStatusReader interface {
+	IsDocumentCompleted(context.Context, string) bool
 }
 
 // NewRetriever 创建多路检索引擎
@@ -55,6 +60,7 @@ func NewRetriever(vectorDB vectordb.VectorDB, embedder embedding.Client, cache c
 	}
 	if len(keywordStores) > 0 {
 		r.keywordStore = keywordStores[0]
+		r.statusStore, _ = keywordStores[0].(documentStatusReader)
 	}
 	return r
 }
@@ -100,16 +106,20 @@ func (r *Retriever) vectorSearch(ctx context.Context, query string, topK int) ([
 		if result.Score < r.scoreThreshold {
 			continue
 		}
-		docID := result.Metadata["doc_id"]
+		docID := fmt.Sprint(result.Metadata["doc_id"])
 		if docID == "" {
 			docID = result.ID
 		}
+		if r.statusStore != nil && !r.statusStore.IsDocumentCompleted(ctx, docID) {
+			continue
+		}
 		refs = append(refs, model.Reference{
-			ChunkID: result.ID,
-			DocID:   docID,
-			Title:   result.Metadata["title"],
-			Content: result.Content,
-			Score:   result.Score,
+			ChunkID:  result.ID,
+			DocID:    docID,
+			Title:    fmt.Sprint(result.Metadata["title"]),
+			Content:  result.Content,
+			Score:    result.Score,
+			Metadata: result.Metadata,
 		})
 	}
 	r.logger.Info("向量召回完成",

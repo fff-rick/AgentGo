@@ -60,7 +60,8 @@ func (c *Client) migrate(ctx context.Context) error {
     metadata jsonb NOT NULL DEFAULT '{}',
     status text NOT NULL DEFAULT 'completed',
     chunk_count integer NOT NULL DEFAULT 0,
-    content_hash text NOT NULL DEFAULT '',
+	content_hash text NOT NULL DEFAULT '',
+	error_message text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 )`, `CREATE TABLE IF NOT EXISTS document_chunks (
@@ -69,10 +70,13 @@ func (c *Client) migrate(ctx context.Context) error {
 	content text NOT NULL,
 	chunk_index integer NOT NULL,
 	token_count integer NOT NULL DEFAULT -1,
+	metadata jsonb NOT NULL DEFAULT '{}',
 	created_at timestamptz NOT NULL DEFAULT now(),
 	UNIQUE (doc_id, chunk_index)
 )`, `ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash text NOT NULL DEFAULT ''`,
+		`ALTER TABLE documents ADD COLUMN IF NOT EXISTS error_message text NOT NULL DEFAULT ''`,
 		`ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS token_count integer NOT NULL DEFAULT -1`,
+		`ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'`,
 		`CREATE TABLE IF NOT EXISTS document_terms (
 	chunk_id text NOT NULL REFERENCES document_chunks(id) ON DELETE CASCADE,
 	term varchar(128) NOT NULL,
@@ -135,21 +139,53 @@ func (c *Client) Close() error { return c.db.Close() }
 
 func (c *Client) Healthy(ctx context.Context) bool { return c.db.PingContext(ctx) == nil }
 
+func (c *Client) IsDocumentCompleted(ctx context.Context, id string) bool {
+	var completed bool
+	if err := c.db.QueryRowContext(ctx, `SELECT status='completed' FROM documents WHERE id=$1`, id).Scan(&completed); err != nil {
+		return false
+	}
+	return completed
+}
+
 // FindDocument returns the persisted processing status used by the document API.
 func (c *Client) FindDocument(ctx context.Context, id string) (*model.DocumentResponse, error) {
-	const query = `SELECT id, title, status, chunk_count, created_at, content_hash FROM documents WHERE id = $1`
+	const query = `SELECT id, title, status, chunk_count, created_at, content_hash, error_message FROM documents WHERE id = $1`
 	var doc model.DocumentResponse
-	if err := c.db.QueryRowContext(ctx, query, id).Scan(&doc.DocID, &doc.Title, &doc.Status, &doc.ChunkCount, &doc.CreatedAt, &doc.ContentHash); err != nil {
+	if err := c.db.QueryRowContext(ctx, query, id).Scan(&doc.DocID, &doc.Title, &doc.Status, &doc.ChunkCount, &doc.CreatedAt, &doc.ContentHash, &doc.Error); err != nil {
 		return nil, err
 	}
 	return &doc, nil
+}
+
+func (c *Client) MarkDocumentProcessing(ctx context.Context, doc *model.Document) error {
+	metadata, err := json.Marshal(doc.Metadata)
+	if err != nil {
+		return fmt.Errorf("序列化文档 metadata 失败: %w", err)
+	}
+	_, err = c.db.ExecContext(ctx, `INSERT INTO documents
+    (id,title,content_type,tags,metadata,status,chunk_count,content_hash,created_at,updated_at,error_message)
+VALUES ($1,$2,$3,$4,$5,'processing',0,$6,$7,$8,'')
+ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,content_type=EXCLUDED.content_type,tags=EXCLUDED.tags,
+metadata=EXCLUDED.metadata,status='processing',content_hash=EXCLUDED.content_hash,updated_at=EXCLUDED.updated_at,error_message=''`,
+		doc.ID, doc.Title, doc.ContentType, doc.Tags, string(metadata), doc.ContentHash, doc.CreatedAt, doc.UpdatedAt)
+	return err
+}
+
+func (c *Client) MarkDocumentFailed(ctx context.Context, id, message string) error {
+	_, err := c.db.ExecContext(ctx, `UPDATE documents SET status='failed', error_message=$2, updated_at=now() WHERE id=$1`, id, message)
+	return err
+}
+
+func (c *Client) FailInterruptedDocuments(ctx context.Context) error {
+	_, err := c.db.ExecContext(ctx, `UPDATE documents SET status='failed', error_message='服务重启中断，请重新上传', updated_at=now() WHERE status='processing'`)
+	return err
 }
 
 // IndexDocument atomically replaces one document and all its keyword-search chunks.
 func (c *Client) IndexDocument(ctx context.Context, doc *model.Document, chunks []model.DocumentChunk) error {
 	documentMetadata := doc.Metadata
 	if documentMetadata == nil {
-		documentMetadata = map[string]string{}
+		documentMetadata = map[string]any{}
 	}
 	metadata, err := json.Marshal(documentMetadata)
 	if err != nil {
@@ -175,7 +211,7 @@ VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8, $9)
 ON CONFLICT (id) DO UPDATE SET
     title = EXCLUDED.title, content_type = EXCLUDED.content_type, tags = EXCLUDED.tags,
     metadata = EXCLUDED.metadata, status = EXCLUDED.status,
-    chunk_count = EXCLUDED.chunk_count, content_hash = EXCLUDED.content_hash,
+    chunk_count = EXCLUDED.chunk_count, content_hash = EXCLUDED.content_hash, error_message = '',
     updated_at = EXCLUDED.updated_at`
 	if _, err := tx.ExecContext(ctx, upsert, doc.ID, doc.Title, doc.ContentType, tags, string(metadata), len(chunks), doc.ContentHash, doc.CreatedAt, doc.UpdatedAt); err != nil {
 		return fmt.Errorf("保存文档失败: %w", err)
@@ -183,9 +219,13 @@ ON CONFLICT (id) DO UPDATE SET
 	if _, err := tx.ExecContext(ctx, "DELETE FROM document_chunks WHERE doc_id = $1", doc.ID); err != nil {
 		return fmt.Errorf("清理旧文档分块失败: %w", err)
 	}
-	const insertChunk = `INSERT INTO document_chunks (id, doc_id, content, chunk_index, token_count, created_at) VALUES ($1, $2, $3, $4, $5, $6)`
+	const insertChunk = `INSERT INTO document_chunks (id, doc_id, content, chunk_index, token_count, created_at, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	for i, chunk := range chunks {
-		if _, err := tx.ExecContext(ctx, insertChunk, chunk.ID, chunk.DocID, chunk.Content, chunk.ChunkIndex, termCount(chunkTerms[i]), chunk.CreatedAt); err != nil {
+		chunkMetadata, err := json.Marshal(chunk.Metadata)
+		if err != nil {
+			return fmt.Errorf("序列化分块 metadata 失败: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, insertChunk, chunk.ID, chunk.DocID, chunk.Content, chunk.ChunkIndex, termCount(chunkTerms[i]), chunk.CreatedAt, string(chunkMetadata)); err != nil {
 			return fmt.Errorf("保存文档分块 %q 失败: %w", chunk.ID, err)
 		}
 		if err := c.insertTerms(ctx, tx, chunk.ID, chunkTerms[i]); err != nil {
@@ -249,14 +289,14 @@ func (c *Client) Search(ctx context.Context, query string, topK int) ([]model.Re
     SELECT COUNT(*)::float8 AS document_count,
            COALESCE(AVG(token_count), 0)::float8 AS average_length
     FROM document_chunks
-    WHERE token_count >= 0
+    WHERE token_count > 0
 ), document_frequency AS (
     SELECT dt.term, COUNT(*)::float8 AS document_frequency
     FROM document_terms dt
     JOIN query_terms q ON q.term = dt.term
     GROUP BY dt.term
 )
-SELECT c.id, c.doc_id, d.title, c.content,
+SELECT c.id, c.doc_id, d.title, c.content, c.metadata,
        SUM(
            LN(1.0 + (corpus.document_count - df.document_frequency + 0.5) / (df.document_frequency + 0.5))
            * (dt.term_frequency * 2.2)
@@ -268,7 +308,7 @@ JOIN document_terms dt ON dt.chunk_id = c.id
 JOIN document_frequency df ON df.term = dt.term
 CROSS JOIN corpus
 WHERE d.status = 'completed' AND c.token_count > 0
-GROUP BY c.id, c.doc_id, d.title, c.content, c.chunk_index, corpus.document_count, corpus.average_length
+GROUP BY c.id, c.doc_id, d.title, c.content, c.metadata, c.chunk_index, corpus.document_count, corpus.average_length
 ORDER BY score DESC, c.chunk_index ASC, c.id ASC
 LIMIT $2`
 	rows, err := c.db.QueryContext(ctx, search, terms, topK)
@@ -280,8 +320,12 @@ LIMIT $2`
 	refs := make([]model.Reference, 0, topK)
 	for rows.Next() {
 		var ref model.Reference
-		if err := rows.Scan(&ref.ChunkID, &ref.DocID, &ref.Title, &ref.Content, &ref.Score); err != nil {
+		var metadata []byte
+		if err := rows.Scan(&ref.ChunkID, &ref.DocID, &ref.Title, &ref.Content, &metadata, &ref.Score); err != nil {
 			return nil, fmt.Errorf("读取关键词检索结果失败: %w", err)
+		}
+		if err := json.Unmarshal(metadata, &ref.Metadata); err != nil {
+			return nil, fmt.Errorf("解析分块 metadata 失败: %w", err)
 		}
 		refs = append(refs, ref)
 	}

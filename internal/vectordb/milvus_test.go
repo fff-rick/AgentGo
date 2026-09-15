@@ -54,7 +54,7 @@ func TestMilvusIntegration(t *testing.T) {
 	defer client.Close()
 
 	id := uuid.NewString()
-	record := VectorRecord{ID: id, Content: "milvus integration", Embedding: []float32{1, 0, 0, 0}, Metadata: map[string]string{"kind": "test"}}
+	record := VectorRecord{ID: id, Content: "milvus integration", Embedding: []float32{1, 0, 0, 0}, Metadata: map[string]any{"kind": "test"}}
 	if err := client.Insert(ctx, "", []VectorRecord{record}); err != nil {
 		t.Fatal(err)
 	}

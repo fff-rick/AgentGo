@@ -31,14 +31,14 @@ type VectorRecord struct {
 	ID        string
 	Content   string
 	Embedding []float32
-	Metadata  map[string]string
+	Metadata  map[string]any
 }
 
 type SearchResult struct {
 	ID       string
 	Content  string
 	Score    float64
-	Metadata map[string]string
+	Metadata map[string]any
 }
 
 type VectorDB interface {
@@ -308,7 +308,7 @@ func stringAt(col column.Column, index int) (string, error) {
 	return text, nil
 }
 
-func metadataAt(col column.Column, index int) (map[string]string, error) {
+func metadataAt(col column.Column, index int) (map[string]any, error) {
 	if col == nil {
 		return nil, fmt.Errorf("column 不存在")
 	}
@@ -325,7 +325,7 @@ func metadataAt(col column.Column, index int) (map[string]string, error) {
 	default:
 		return nil, fmt.Errorf("metadata 类型为 %T", value)
 	}
-	metadata := make(map[string]string)
+	metadata := make(map[string]any)
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &metadata); err != nil {
 			return nil, err

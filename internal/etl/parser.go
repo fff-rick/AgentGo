@@ -1,14 +1,15 @@
-// Package etl 提供文档的 ETL（Extract-Transform-Load）处理流水线。
-// 负责文档解析、分块、向量化和入库的完整流程。
+// Package etl provides format-aware document extraction.
 package etl
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 )
 
-// DocumentType 文档类型
 type DocumentType string
 
 const (
@@ -16,131 +17,149 @@ const (
 	DocTypeMarkdown DocumentType = "markdown"
 	DocTypeHTML     DocumentType = "html"
 	DocTypePDF      DocumentType = "pdf"
+	DocTypeDOCX     DocumentType = "docx"
+	DocTypeXLSX     DocumentType = "xlsx"
 )
 
-// ParsedDocument 解析后的文档
+type SourceDocument struct {
+	Filename string
+	Type     DocumentType
+	Data     []byte
+}
+
 type ParsedDocument struct {
 	Title    string
 	Content  string
-	Sections []Section
-	Metadata map[string]string
+	Elements []DocumentElement
+	Metadata map[string]any
 }
 
-// Section 文档中的一个章节
-type Section struct {
-	Title   string
-	Content string
-	Level   int // 标题级别
+type DocumentElement struct {
+	Type     string
+	Content  string
+	Level    int
+	Metadata map[string]any
 }
 
-// Parser 文档解析器接口
 type Parser interface {
-	// Parse 将原始文档内容解析为结构化格式
-	Parse(ctx context.Context, content string, docType DocumentType) (*ParsedDocument, error)
+	Parse(context.Context, SourceDocument) (*ParsedDocument, error)
 }
 
-// DefaultParser 默认文档解析器
-type DefaultParser struct{}
-
-// NewDefaultParser 创建默认解析器
-func NewDefaultParser() *DefaultParser {
-	return &DefaultParser{}
+type DefaultParser struct {
+	doclingURL string
+	client     *http.Client
 }
 
-// Parse 解析文档内容
-func (p *DefaultParser) Parse(ctx context.Context, content string, docType DocumentType) (*ParsedDocument, error) {
-	switch docType {
-	case DocTypeMarkdown:
-		return p.parseMarkdown(content)
-	case DocTypeHTML:
-		return p.parseHTML(content)
-	case DocTypeText:
-		return p.parseText(content)
-	default:
-		return p.parseText(content)
+func NewDefaultParser() *DefaultParser { return NewDocumentParser("", 10*time.Minute) }
+
+func NewDocumentParser(doclingURL string, timeout time.Duration) *DefaultParser {
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
 	}
+	return &DefaultParser{doclingURL: doclingURL, client: &http.Client{Timeout: timeout}}
 }
 
-// parseMarkdown 解析 Markdown 文档，提取标题层级结构
-func (p *DefaultParser) parseMarkdown(content string) (*ParsedDocument, error) {
-	doc := &ParsedDocument{
-		Content:  content,
-		Metadata: make(map[string]string),
+func (p *DefaultParser) Healthy(ctx context.Context) bool {
+	if p.doclingURL == "" {
+		return false
 	}
-
-	lines := strings.Split(content, "\n")
-	var currentSection *Section
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		// 检测标题
-		if strings.HasPrefix(trimmed, "#") {
-			level := 0
-			for _, ch := range trimmed {
-				if ch == '#' {
-					level++
-				} else {
-					break
-				}
-			}
-			title := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
-
-			if doc.Title == "" && level == 1 {
-				doc.Title = title
-			}
-
-			if currentSection != nil {
-				doc.Sections = append(doc.Sections, *currentSection)
-			}
-			currentSection = &Section{Title: title, Level: level}
-		} else if currentSection != nil {
-			currentSection.Content += line + "\n"
-		}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(p.doclingURL, "/")+"/health", nil)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return false
 	}
-
-	if currentSection != nil {
-		doc.Sections = append(doc.Sections, *currentSection)
-	}
-
-	return doc, nil
+	defer resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
-// parseHTML 解析 HTML 文档（简化实现，实际应使用 goquery 等库）
-func (p *DefaultParser) parseHTML(content string) (*ParsedDocument, error) {
-	// 实际项目中应使用 goquery 进行 HTML 解析
-	// 此处进行简单的标签清理
-	cleaned := content
-	// 移除 HTML 标签（简化处理）
-	for strings.Contains(cleaned, "<") {
-		start := strings.Index(cleaned, "<")
-		end := strings.Index(cleaned, ">")
-		if end > start {
-			cleaned = cleaned[:start] + cleaned[end+1:]
-		} else {
-			break
-		}
-	}
-
-	return &ParsedDocument{
-		Content:  strings.TrimSpace(cleaned),
-		Metadata: make(map[string]string),
-	}, nil
-}
-
-// parseText 解析纯文本
-func (p *DefaultParser) parseText(content string) (*ParsedDocument, error) {
-	if content == "" {
+func (p *DefaultParser) Parse(ctx context.Context, source SourceDocument) (*ParsedDocument, error) {
+	if len(source.Data) == 0 {
 		return nil, fmt.Errorf("文档内容为空")
 	}
+	switch source.Type {
+	case DocTypePDF:
+		return p.parsePDF(ctx, source)
+	case DocTypeDOCX:
+		return parseDOCX(source)
+	case DocTypeXLSX:
+		return parseXLSX(source)
+	case DocTypeMarkdown:
+		return parseMarkdown(source.Data), nil
+	case DocTypeHTML:
+		return parseHTML(source.Data), nil
+	case DocTypeText:
+		return parseText(source.Data), nil
+	default:
+		return nil, fmt.Errorf("不支持的文档类型 %q", source.Type)
+	}
+}
 
-	// 取第一行作为标题
+func parseMarkdown(data []byte) *ParsedDocument {
+	content := string(data)
+	doc := &ParsedDocument{Content: content, Metadata: map[string]any{}}
+	var path []string
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		level := markdownHeadingLevel(trimmed)
+		if level > 0 {
+			title := strings.TrimSpace(trimmed[level:])
+			if doc.Title == "" {
+				doc.Title = title
+			}
+			if level <= len(path) {
+				path = path[:level-1]
+			}
+			path = append(path, title)
+			doc.Elements = append(doc.Elements, element("heading", title, level, path))
+			continue
+		}
+		doc.Elements = append(doc.Elements, element("paragraph", trimmed, 0, path))
+	}
+	return doc
+}
+
+func markdownHeadingLevel(line string) int {
+	n := 0
+	for n < len(line) && n < 6 && line[n] == '#' {
+		n++
+	}
+	if n == 0 || n == len(line) || line[n] != ' ' {
+		return 0
+	}
+	return n
+}
+
+func parseHTML(data []byte) *ParsedDocument {
+	content := string(data)
+	for strings.Contains(content, "<") {
+		start, end := strings.Index(content, "<"), strings.Index(content, ">")
+		if end <= start {
+			break
+		}
+		content = content[:start] + " " + content[end+1:]
+	}
+	return parseText([]byte(strings.Join(strings.Fields(content), " ")))
+}
+
+func parseText(data []byte) *ParsedDocument {
+	content := strings.TrimSpace(string(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))))
 	lines := strings.SplitN(content, "\n", 2)
-	title := strings.TrimSpace(lines[0])
+	doc := &ParsedDocument{Title: strings.TrimSpace(lines[0]), Content: content, Metadata: map[string]any{}}
+	for _, para := range strings.Split(content, "\n\n") {
+		if para = strings.TrimSpace(para); para != "" {
+			doc.Elements = append(doc.Elements, element("paragraph", para, 0, nil))
+		}
+	}
+	return doc
+}
 
-	return &ParsedDocument{
-		Title:    title,
-		Content:  content,
-		Metadata: make(map[string]string),
-	}, nil
+func element(kind, content string, level int, path []string) DocumentElement {
+	metadata := map[string]any{"element_type": kind}
+	if len(path) > 0 {
+		metadata["section_path"] = append([]string(nil), path...)
+	}
+	return DocumentElement{Type: kind, Content: strings.TrimSpace(content), Level: level, Metadata: metadata}
 }

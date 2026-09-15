@@ -37,11 +37,12 @@ type ToolCallInfo struct {
 
 // Reference RAG 检索引用的文档片段
 type Reference struct {
-	ChunkID string  `json:"chunk_id,omitempty"`
-	DocID   string  `json:"doc_id"`
-	Title   string  `json:"title"`
-	Content string  `json:"content"`
-	Score   float64 `json:"score"`
+	ChunkID  string         `json:"chunk_id,omitempty"`
+	DocID    string         `json:"doc_id"`
+	Title    string         `json:"title"`
+	Content  string         `json:"content"`
+	Score    float64        `json:"score"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // UsageInfo Token 用量统计
@@ -77,4 +78,5 @@ type DocumentResponse struct {
 	ChunkCount  int       `json:"chunk_count"`
 	CreatedAt   time.Time `json:"created_at"`
 	ContentHash string    `json:"-"`
+	Error       string    `json:"error,omitempty"`
 }

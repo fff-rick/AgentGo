@@ -40,14 +40,21 @@ type stubKeywordStore struct {
 	results []model.Reference
 }
 
+type statusKeywordStore struct {
+	stubKeywordStore
+	completed bool
+}
+
+func (s statusKeywordStore) IsDocumentCompleted(context.Context, string) bool { return s.completed }
+
 func (s stubKeywordStore) Search(context.Context, string, int) ([]model.Reference, error) {
 	return s.results, nil
 }
 
 func TestRetrieveFiltersLowSimilarityAndPreservesMilvusScore(t *testing.T) {
 	db := stubVectorDB{results: []vectordb.SearchResult{
-		{ID: "relevant", Content: "relevant content", Score: 0.91, Metadata: map[string]string{"doc_id": "doc-1", "title": "Relevant"}},
-		{ID: "irrelevant", Content: "irrelevant content", Score: 0.69, Metadata: map[string]string{"doc_id": "doc-2", "title": "Irrelevant"}},
+		{ID: "relevant", Content: "relevant content", Score: 0.91, Metadata: map[string]any{"doc_id": "doc-1", "title": "Relevant"}},
+		{ID: "irrelevant", Content: "irrelevant content", Score: 0.69, Metadata: map[string]any{"doc_id": "doc-2", "title": "Irrelevant"}},
 	}}
 	retriever := NewRetriever(db, stubEmbedder{}, nil, 0.7, zap.NewNop())
 
@@ -68,7 +75,7 @@ func TestRetrieveFiltersLowSimilarityAndPreservesMilvusScore(t *testing.T) {
 
 func TestHybridSearchWithEmptyKeywordResultsPreservesVectorScore(t *testing.T) {
 	db := stubVectorDB{results: []vectordb.SearchResult{
-		{ID: "relevant", Content: "content", Score: 0.88, Metadata: map[string]string{"doc_id": "doc-1"}},
+		{ID: "relevant", Content: "content", Score: 0.88, Metadata: map[string]any{"doc_id": "doc-1"}},
 	}}
 	retriever := NewRetriever(db, stubEmbedder{}, nil, 0.7, zap.NewNop())
 
@@ -81,10 +88,22 @@ func TestHybridSearchWithEmptyKeywordResultsPreservesVectorScore(t *testing.T) {
 	}
 }
 
+func TestVectorSearchExcludesProcessingDocuments(t *testing.T) {
+	db := stubVectorDB{results: []vectordb.SearchResult{{ID: "chunk-1", Content: "stale", Score: .9, Metadata: map[string]any{"doc_id": "doc-1"}}}}
+	retriever := NewRetriever(db, stubEmbedder{}, nil, .7, zap.NewNop(), statusKeywordStore{completed: false})
+	refs, err := retriever.RetrieveWithMode(context.Background(), "query", 5, ModeVector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("refs=%+v", refs)
+	}
+}
+
 func TestRetrieveUsesHybridSearchAndFusesByChunk(t *testing.T) {
 	db := stubVectorDB{results: []vectordb.SearchResult{
-		{ID: "chunk-1", Content: "hybrid content", Score: 0.9, Metadata: map[string]string{"doc_id": "doc-1"}},
-		{ID: "chunk-2", Content: "another chunk", Score: 0.8, Metadata: map[string]string{"doc_id": "doc-1"}},
+		{ID: "chunk-1", Content: "hybrid content", Score: 0.9, Metadata: map[string]any{"doc_id": "doc-1"}},
+		{ID: "chunk-2", Content: "another chunk", Score: 0.8, Metadata: map[string]any{"doc_id": "doc-1"}},
 	}}
 	keywords := stubKeywordStore{results: []model.Reference{
 		{ChunkID: "chunk-1", DocID: "doc-1", Content: "hybrid content", Score: 1},

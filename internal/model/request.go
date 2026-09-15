@@ -32,11 +32,11 @@ type ChatOptions struct {
 
 // DocumentUploadRequest 文档上传请求
 type DocumentUploadRequest struct {
-	Title       string            `json:"title" binding:"required"`
-	Content     string            `json:"content" binding:"required"`
-	ContentType string            `json:"content_type"` // text / markdown / html
-	Tags        []string          `json:"tags,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	Title       string         `json:"title" binding:"required"`
+	Content     string         `json:"content" binding:"required"`
+	ContentType string         `json:"content_type"` // text / markdown / html
+	Tags        []string       `json:"tags,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 // LLMRequest 发送给大模型的请求

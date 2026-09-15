@@ -32,7 +32,7 @@ func (v *filteredVectorsStub) SearchWithFilter(_ context.Context, _ string, _ []
 }
 
 func TestSemanticSearchPushesUserFilterToMilvus(t *testing.T) {
-	vectors := &filteredVectorsStub{results: []vectordb.SearchResult{{Content: "prefers Go", Metadata: map[string]string{"user_id": "user-1", "kind": "preference"}}}}
+	vectors := &filteredVectorsStub{results: []vectordb.SearchResult{{Content: "prefers Go", Metadata: map[string]any{"user_id": "user-1", "kind": "preference"}}}}
 	store := NewSemanticStore(vectors, embeddingStub{}, "semantic_memory_v1")
 	items, err := store.Search(context.Background(), "user-1", "language", 5)
 	if err != nil {

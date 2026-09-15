@@ -96,14 +96,15 @@ make docker-stop
 make tui
 ```
 
-TUI 会实时展示 Agent Loop 阶段、模型显式 reasoning、原生 Function Calling 及结果、RAG 引用、错误和最终答案，也能直接导入宿主机上的 Markdown 文件：
+TUI 会实时展示 Agent Loop 阶段、模型显式 reasoning、原生 Function Calling 及结果、RAG 引用、错误和最终答案，也能直接导入宿主机上的 Markdown、PDF、DOCX 和 XLSX 文件：
 
 ```text
 /import /home/xin/docs/knowledge.md
 /import "~/docs/path with spaces.md"
+/import /home/xin/docs/orders.xlsx
 ```
 
-文件限制为 UTF-8 编码、`.md`/`.markdown` 后缀且不超过 10 MiB。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/plan <任务>` 显式启用 Planner-Executor，`/clear` 创建新会话，`Ctrl+C` 退出。Planner 模式由调用方指定，与意图识别无关。TUI 使用 `AGENTGO_USER_ID`（默认 `local-user`）创建会话。也可先通过 API 创建会话，再观察 SSE 事件：
+Markdown 必须为 UTF-8 且不超过 10 MiB；PDF、DOCX、XLSX 不超过 50 MiB。文件导入异步执行，TUI 会轮询状态并展示精确的页码或 Excel 单元格范围。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/plan <任务>` 显式启用 Planner-Executor，`/clear` 创建新会话，`Ctrl+C` 退出。Planner 模式由调用方指定，与意图识别无关。TUI 使用 `AGENTGO_USER_ID`（默认 `local-user`）创建会话。也可先通过 API 创建会话，再观察 SSE 事件：
 
 ```bash
 SESSION_ID=$(curl -s http://localhost:8080/api/v1/sessions \
@@ -163,6 +164,8 @@ APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 | `APP_EMBEDDING_DIMENSION` | `1024` | embedding 输出维度 |
 | `APP_RAG_SCORE_THRESHOLD` | `0.5` | 最低相关性分数（0–1），低于该值的片段不会进入回答上下文 |
 | `APP_RAG_ENABLE_RERANK` | `true` | 是否使用 LLM 对向量召回结果重排 |
+| `APP_DOCUMENT_DOCLING_URL` | `http://localhost:5001` | PDF 版面分析与 OCR 服务地址；Compose 内自动改为 `http://docling:5001` |
+| `APP_DOCUMENT_PARSE_TIMEOUT` | `10m` | 单个 PDF 的 Docling 解析超时 |
 | `APP_SEARCH_BASE_URL` | `http://localhost:7070` | SearXNG 地址；Compose 内自动改为 `http://searxng:8080` |
 | `APP_SEARCH_TIMEOUT` | `20s` | 单次真实网络搜索超时 |
 | `APP_SEARCH_LANGUAGE` | `zh-CN` | 搜索结果语言 |
@@ -210,7 +213,7 @@ docker compose up -d searxng
 | POST | `/api/v1/chat` | 对话（同步） |
 | POST | `/api/v1/chat/stream` | 对话（SSE 流式） |
 | POST | `/api/v1/documents` | 上传文档 |
-| POST | `/api/v1/documents/import` | multipart 上传本地 Markdown，文件字段为 `file` |
+| POST | `/api/v1/documents/import` | 异步 multipart 上传 Markdown/PDF/DOCX/XLSX，文件字段为 `file` |
 | GET  | `/api/v1/documents/:id` | 查询文档状态 |
 | GET  | `/health` | 健康检查 |
 

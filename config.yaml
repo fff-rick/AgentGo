@@ -32,3 +32,7 @@ context:
 tools:
   lazy_load_threshold: 3
   max_discovery_calls: 4
+
+document:
+  docling_url: http://localhost:5001
+  parse_timeout: 10m

@@ -180,14 +180,14 @@ func (m *model) submit() (tea.Model, tea.Cmd) {
 	if strings.HasPrefix(query, "/import ") {
 		path := strings.Trim(strings.TrimSpace(strings.TrimPrefix(query, "/import ")), `"'`)
 		if path == "" {
-			m.logs = append(m.logs, errorStyle.Render("错误: 请指定 Markdown 文件路径"))
+			m.logs = append(m.logs, errorStyle.Render("错误: 请指定文档路径"))
 			return m, nil
 		}
 		m.logs = append(m.logs, userStyle.Render("导入: ")+path)
 		ctx, cancel := context.WithCancel(context.Background())
 		events := make(chan streamEvent, 8)
 		m.beginRequest(cancel, events)
-		go importMarkdown(ctx, m.baseURL, path, events)
+		go importDocument(ctx, m.baseURL, path, events)
 		return m, tea.Batch(waitEvent(events), tickSpinner())
 	}
 	mode := ""
@@ -289,7 +289,13 @@ func (m *model) renderEvent(raw streamEvent) {
 	case observe.TypeReferences:
 		m.logs = append(m.logs, statusStyle.Render(fmt.Sprintf("▣ RAG 命中 %d 条引用", len(event.References))))
 		for _, ref := range event.References {
-			m.logs = append(m.logs, statusStyle.Render(fmt.Sprintf("  - %s [%s] score=%.4f", ref.Title, ref.DocID, ref.Score)))
+			locator := ""
+			if value := fmt.Sprint(ref.Metadata["range"]); value != "<nil>" && value != "" {
+				locator = " · " + value
+			} else if value := fmt.Sprint(ref.Metadata["page"]); value != "<nil>" && value != "" {
+				locator = " · page " + value
+			}
+			m.logs = append(m.logs, statusStyle.Render(fmt.Sprintf("  - %s [%s]%s score=%.4f", ref.Title, ref.DocID, locator, ref.Score)))
 		}
 	case observe.TypeAnswer:
 		line := answerStyle.Render("回答: ") + event.Message
@@ -461,7 +467,7 @@ func sendError(events chan<- streamEvent, err error) {
 	events <- streamEvent{name: "error", data: data}
 }
 
-func importMarkdown(ctx context.Context, baseURL, path string, events chan<- streamEvent) {
+func importDocument(ctx context.Context, baseURL, path string, events chan<- streamEvent) {
 	defer close(events)
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -469,8 +475,9 @@ func importMarkdown(ctx context.Context, baseURL, path string, events chan<- str
 		}
 	}
 	ext := strings.ToLower(filepath.Ext(path))
-	if ext != ".md" && ext != ".markdown" {
-		sendError(events, fmt.Errorf("仅支持 .md 或 .markdown 文件"))
+	allowed := map[string]bool{".md": true, ".markdown": true, ".pdf": true, ".docx": true, ".xlsx": true}
+	if !allowed[ext] {
+		sendError(events, fmt.Errorf("仅支持 Markdown、PDF、DOCX 或 XLSX 文件"))
 		return
 	}
 	file, err := os.Open(path)
@@ -484,8 +491,12 @@ func importMarkdown(ctx context.Context, baseURL, path string, events chan<- str
 		sendError(events, fmt.Errorf("读取文件信息失败: %w", err))
 		return
 	}
-	if info.Size() > 10<<20 {
-		sendError(events, fmt.Errorf("Markdown 文件不能超过 10 MiB"))
+	limit := int64(50 << 20)
+	if ext == ".md" || ext == ".markdown" {
+		limit = 10 << 20
+	}
+	if info.Size() > limit {
+		sendError(events, fmt.Errorf("文件不能超过 %d MiB", limit>>20))
 		return
 	}
 	sendObserve(events, observe.Event{Type: observe.TypeStatus, Stage: "import", Message: "正在上传并向量化 " + filepath.Base(path)})
@@ -531,9 +542,58 @@ func importMarkdown(ctx context.Context, baseURL, path string, events chan<- str
 		sendError(events, fmt.Errorf("解析导入响应失败: %w", err))
 		return
 	}
-	if resp.StatusCode != http.StatusOK || result.Code != 0 {
+	if (resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted) || result.Code != 0 {
 		sendError(events, fmt.Errorf("导入失败: %s", result.Message))
 		return
+	}
+	if result.Data.Status == "processing" {
+		sendObserve(events, observe.Event{Type: observe.TypeStatus, Stage: "import", Message: "文件已接收，正在解析 " + filepath.Base(path)})
+		for result.Data.Status == "processing" {
+			timer := time.NewTimer(500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			statusReq, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/v1/documents/"+result.Data.DocID, nil)
+			if err != nil {
+				sendError(events, err)
+				return
+			}
+			statusResp, err := http.DefaultClient.Do(statusReq)
+			if err != nil {
+				if ctx.Err() == nil {
+					sendError(events, err)
+				}
+				return
+			}
+			var statusResult struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+				Data    struct {
+					DocID      string `json:"doc_id"`
+					Title      string `json:"title"`
+					Status     string `json:"status"`
+					ChunkCount int    `json:"chunk_count"`
+					Error      string `json:"error"`
+				} `json:"data"`
+			}
+			err = json.NewDecoder(statusResp.Body).Decode(&statusResult)
+			statusResp.Body.Close()
+			if err != nil || statusResp.StatusCode != http.StatusOK || statusResult.Code != 0 {
+				if err == nil {
+					err = fmt.Errorf("查询导入状态失败: %s", statusResult.Message)
+				}
+				sendError(events, err)
+				return
+			}
+			result.Data.DocID, result.Data.Title, result.Data.Status, result.Data.ChunkCount = statusResult.Data.DocID, statusResult.Data.Title, statusResult.Data.Status, statusResult.Data.ChunkCount
+			if statusResult.Data.Status == "failed" {
+				sendError(events, fmt.Errorf("导入失败: %s", statusResult.Data.Error))
+				return
+			}
+		}
 	}
 	sendObserve(events, observe.Event{
 		Type: observe.TypeStatus, Stage: "import",

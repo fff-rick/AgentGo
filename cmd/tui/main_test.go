@@ -17,7 +17,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/observe"
 )
 
-func TestImportMarkdown(t *testing.T) {
+func TestImportDocument(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/documents/import" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -41,7 +41,7 @@ func TestImportMarkdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := make(chan streamEvent, 8)
-	importMarkdown(context.Background(), server.URL, path, events)
+	importDocument(context.Background(), server.URL, path, events)
 	var got []observe.Event
 	for raw := range events {
 		if raw.name == observe.TypeStatus {
