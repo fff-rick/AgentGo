@@ -65,14 +65,18 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 	}
 	doc.ContentType = normalizeContentType(doc.ContentType)
 	doc.ID = DocumentID(doc.ContentType, doc.Title)
-	doc.ContentHash = ContentHash(doc.Content)
+	raw := doc.RawContent
+	if raw == nil {
+		raw = []byte(doc.Content)
+	}
+	doc.ContentHash = ContentHashBytes(raw)
 
 	existing, err := p.indexer.FindDocument(ctx, doc.ID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("查询现有文档失败: %w", err)
 	}
 	if err == nil {
-		if existing.ContentHash == doc.ContentHash {
+		if existing.Status == "completed" && existing.ContentHash == doc.ContentHash {
 			return existing, nil
 		}
 		doc.CreatedAt = existing.CreatedAt
@@ -83,13 +87,16 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 	)
 
 	// 阶段一：解析文档
-	parsed, err := p.parser.Parse(ctx, doc.Content, DocumentType(doc.ContentType))
+	parsed, err := p.parser.Parse(ctx, SourceDocument{Filename: doc.Filename, Type: DocumentType(doc.ContentType), Data: raw})
 	if err != nil {
 		return nil, fmt.Errorf("文档解析失败: %w", err)
 	}
 
 	// 阶段二：文档分块
-	parsedChunks := p.chunker.Split(parsed.Content, StrategySentence)
+	parsedChunks := p.chunker.SplitElements(parsed.Elements)
+	if len(parsedChunks) == 0 {
+		parsedChunks = p.chunker.Split(parsed.Content, StrategySentence)
+	}
 	if len(parsedChunks) == 0 {
 		return nil, fmt.Errorf("文档分块结果为空")
 	}
@@ -100,33 +107,39 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 	)
 
 	// 阶段三：向量化并入库
-	texts := make([]string, len(parsedChunks))
-	for i, chunk := range parsedChunks {
-		texts[i] = chunk.Content
+	var texts []string
+	for _, chunk := range parsedChunks {
+		if chunk.Content != "" {
+			texts = append(texts, chunk.Content)
+		}
 	}
-	embeddings, err := p.embedder.EmbedBatch(ctx, texts)
-	if err != nil {
-		return nil, fmt.Errorf("文档向量化失败: %w", err)
+	var embeddings [][]float32
+	if len(texts) > 0 {
+		embeddings, err = p.embedder.EmbedBatch(ctx, texts)
+		if err != nil {
+			return nil, fmt.Errorf("文档向量化失败: %w", err)
+		}
 	}
 
 	records := make([]vectordb.VectorRecord, 0, len(parsedChunks))
 	keywordChunks := make([]model.DocumentChunk, 0, len(parsedChunks))
-	for i, chunk := range parsedChunks {
+	var unindexedIDs []string
+	embeddingIndex := 0
+	for _, chunk := range parsedChunks {
 		chunkID := stableChunkID(doc.ID, chunk.ChunkIndex)
-		record := vectordb.VectorRecord{
-			ID:        chunkID,
-			Content:   chunk.Content,
-			Embedding: embeddings[i],
-			Metadata: map[string]string{
-				"doc_id":      doc.ID,
-				"title":       doc.Title,
-				"chunk_index": fmt.Sprintf("%d", chunk.ChunkIndex),
-			},
+		if chunk.Content != "" {
+			metadata := cloneMetadata(chunk.Metadata)
+			metadata["doc_id"] = doc.ID
+			metadata["title"] = doc.Title
+			metadata["chunk_index"] = chunk.ChunkIndex
+			records = append(records, vectordb.VectorRecord{ID: chunkID, Content: chunk.Content, Embedding: embeddings[embeddingIndex], Metadata: metadata})
+			embeddingIndex++
+		} else {
+			unindexedIDs = append(unindexedIDs, chunkID)
 		}
-		records = append(records, record)
 		keywordChunks = append(keywordChunks, model.DocumentChunk{
 			ID: chunkID, DocID: doc.ID, Content: chunk.Content,
-			ChunkIndex: chunk.ChunkIndex, CreatedAt: time.Now(),
+			ChunkIndex: chunk.ChunkIndex, Metadata: cloneMetadata(chunk.Metadata), CreatedAt: time.Now(),
 		})
 	}
 
@@ -134,9 +147,14 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 		p.logger.Error("向量入库失败，可重复导入修复", zap.Error(err))
 		return nil, fmt.Errorf("向量入库失败: %w", err)
 	}
-	if existing != nil && existing.ChunkCount > len(records) {
-		staleIDs := make([]string, 0, existing.ChunkCount-len(records))
-		for i := len(records); i < existing.ChunkCount; i++ {
+	if len(unindexedIDs) > 0 {
+		if err := p.vectorDB.Delete(ctx, "", unindexedIDs); err != nil {
+			return nil, fmt.Errorf("清理无文本元素向量失败: %w", err)
+		}
+	}
+	if existing != nil && existing.ChunkCount > len(parsedChunks) {
+		staleIDs := make([]string, 0, existing.ChunkCount-len(parsedChunks))
+		for i := len(parsedChunks); i < existing.ChunkCount; i++ {
 			staleIDs = append(staleIDs, stableChunkID(doc.ID, i))
 		}
 		if err := p.vectorDB.Delete(ctx, "", staleIDs); err != nil {
@@ -174,7 +192,11 @@ func DocumentID(contentType, title string) string {
 
 // ContentHash identifies the exact raw content version of a document.
 func ContentHash(content string) string {
-	sum := sha256.Sum256([]byte(content))
+	return ContentHashBytes([]byte(content))
+}
+
+func ContentHashBytes(content []byte) string {
+	sum := sha256.Sum256(content)
 	return fmt.Sprintf("%x", sum)
 }
 

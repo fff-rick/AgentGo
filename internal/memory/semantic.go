@@ -44,7 +44,7 @@ func (s *SemanticStore) Save(ctx context.Context, item model.MemoryItem) error {
 	}
 	return s.vectors.Insert(ctx, s.collection, []vectordb.VectorRecord{{
 		ID: item.ID, Content: item.Content, Embedding: vector,
-		Metadata: map[string]string{
+		Metadata: map[string]any{
 			"user_id": item.UserID, "kind": string(item.Kind),
 			"importance":        fmt.Sprintf("%g", item.Importance),
 			"source_session_id": item.SourceSessionID,
@@ -68,11 +68,11 @@ func (s *SemanticStore) Search(ctx context.Context, userID, query string, topK i
 	}
 	items := make([]model.MemoryItem, 0, len(results))
 	for _, result := range results {
-		importance, _ := strconv.ParseFloat(result.Metadata["importance"], 64)
-		createdAt, _ := time.Parse(time.RFC3339Nano, result.Metadata["created_at"])
+		importance, _ := strconv.ParseFloat(fmt.Sprint(result.Metadata["importance"]), 64)
+		createdAt, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(result.Metadata["created_at"]))
 		items = append(items, model.MemoryItem{
-			ID: result.ID, UserID: result.Metadata["user_id"], Kind: model.MemoryKind(result.Metadata["kind"]),
-			Content: result.Content, Importance: importance, SourceSessionID: result.Metadata["source_session_id"],
+			ID: result.ID, UserID: fmt.Sprint(result.Metadata["user_id"]), Kind: model.MemoryKind(fmt.Sprint(result.Metadata["kind"])),
+			Content: result.Content, Importance: importance, SourceSessionID: fmt.Sprint(result.Metadata["source_session_id"]),
 			CreatedAt: createdAt, Score: result.Score,
 		})
 	}

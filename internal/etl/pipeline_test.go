@@ -148,8 +148,9 @@ func newTestPipeline(parser Parser, vectors vectordb.VectorDB, embedder *embedde
 
 type parserStub struct{ calls int }
 
-func (p *parserStub) Parse(_ context.Context, content string, _ DocumentType) (*ParsedDocument, error) {
+func (p *parserStub) Parse(_ context.Context, source SourceDocument) (*ParsedDocument, error) {
 	p.calls++
+	content := string(source.Data)
 	return &ParsedDocument{Content: content}, nil
 }
 

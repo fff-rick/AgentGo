@@ -29,6 +29,7 @@ type Config struct {
 	Context   ContextConfig   `mapstructure:"context"`
 	Tools     ToolConfig      `mapstructure:"tools"`
 	Log       LogConfig       `mapstructure:"log"`
+	Document  DocumentConfig  `mapstructure:"document"`
 }
 
 // ServerConfig HTTP 服务器配置
@@ -155,6 +156,11 @@ type SearchConfig struct {
 type LogConfig struct {
 	Level  string `mapstructure:"level"`  // debug / info / warn / error
 	Format string `mapstructure:"format"` // json / text
+}
+
+type DocumentConfig struct {
+	DoclingURL   string        `mapstructure:"docling_url"`
+	ParseTimeout time.Duration `mapstructure:"parse_timeout"`
 }
 
 // DSN 返回 PostgreSQL 连接字符串
@@ -318,6 +324,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("rag.chunk_size", 512)
 	v.SetDefault("rag.chunk_overlap", 64)
 	v.SetDefault("rag.enable_rerank", true)
+	v.SetDefault("document.docling_url", "http://localhost:5001")
+	v.SetDefault("document.parse_timeout", "10m")
 
 	// SearXNG 搜索配置
 	v.SetDefault("search.base_url", "http://localhost:7070")

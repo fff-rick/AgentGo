@@ -140,9 +140,15 @@ func main() {
 	// ======================== 6. 初始化 HTTP 处理器 ========================
 	chatHandler := handler.NewChatHandler(orchestrator, sessionManager, logger)
 	sessionHandler := handler.NewSessionHandler(sessionManager)
-	etlPipeline := etl.NewPipeline(etl.NewDefaultParser(), etl.NewChunker(cfg.RAG.ChunkSize, cfg.RAG.ChunkOverlap), milvusClient, embeddingClient, logger, postgresClient)
-	docHandler := handler.NewDocumentHandler(etlPipeline, logger, postgresClient)
-	healthHandler := handler.NewHealthHandler(redisCache, milvusClient, postgresClient)
+	documentParser := etl.NewDocumentParser(cfg.Document.DoclingURL, cfg.Document.ParseTimeout)
+	etlPipeline := etl.NewPipeline(documentParser, etl.NewChunker(cfg.RAG.ChunkSize, cfg.RAG.ChunkOverlap), milvusClient, embeddingClient, logger, postgresClient)
+	importer, err := etl.NewImporter(context.Background(), etlPipeline, postgresClient, logger)
+	if err != nil {
+		logger.Fatal("初始化文档导入器失败", zap.Error(err))
+	}
+	defer importer.Close()
+	docHandler := handler.NewDocumentHandler(etlPipeline, importer, logger, postgresClient)
+	healthHandler := handler.NewHealthHandler(redisCache, milvusClient, postgresClient, documentParser)
 
 	// ======================== 7. 配置路由并启动服务器 ========================
 	gin.SetMode(cfg.Server.Mode)

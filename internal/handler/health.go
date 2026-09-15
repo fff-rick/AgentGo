@@ -16,6 +16,7 @@ type HealthHandler struct {
 	cache      cache.Cache
 	vectorDB   vectordb.VectorDB
 	postgresDB healthChecker
+	docling    healthChecker
 }
 
 type healthChecker interface {
@@ -23,10 +24,12 @@ type healthChecker interface {
 }
 
 // NewHealthHandler 创建健康检查处理器
-func NewHealthHandler(cache cache.Cache, vectorDB vectordb.VectorDB, postgresDB healthChecker) *HealthHandler {
-	return &HealthHandler{
-		cache: cache, vectorDB: vectorDB, postgresDB: postgresDB,
+func NewHealthHandler(cache cache.Cache, vectorDB vectordb.VectorDB, postgresDB healthChecker, optional ...healthChecker) *HealthHandler {
+	h := &HealthHandler{cache: cache, vectorDB: vectorDB, postgresDB: postgresDB}
+	if len(optional) > 0 {
+		h.docling = optional[0]
 	}
+	return h
 }
 
 // healthResponse 健康检查响应
@@ -67,6 +70,14 @@ func (h *HealthHandler) Check(c *gin.Context) {
 	} else {
 		components["postgres"] = "unhealthy"
 		allHealthy = false
+	}
+	if h.docling != nil {
+		if h.docling.Healthy(ctx) {
+			components["docling"] = "healthy"
+		} else {
+			components["docling"] = "unhealthy"
+			allHealthy = false
+		}
 	}
 
 	status := "healthy"

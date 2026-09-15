@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -19,11 +22,15 @@ import (
 	"github.com/enterprise/ai-agent-go/pkg/common"
 )
 
-const maxMarkdownBytes = 10 << 20
+const (
+	maxMarkdownBytes = 10 << 20
+	maxDocumentBytes = 50 << 20
+)
 
 // DocumentHandler 文档处理器
 type DocumentHandler struct {
 	pipeline     *etl.Pipeline
+	importer     *etl.Importer
 	documentRepo documentReader
 	logger       *zap.Logger
 }
@@ -33,10 +40,10 @@ type documentReader interface {
 }
 
 // NewDocumentHandler 创建文档处理器
-func NewDocumentHandler(pipeline *etl.Pipeline, logger *zap.Logger, repos ...documentReader) *DocumentHandler {
+func NewDocumentHandler(pipeline *etl.Pipeline, importer *etl.Importer, logger *zap.Logger, repos ...documentReader) *DocumentHandler {
 	h := &DocumentHandler{
-		pipeline: pipeline,
-		logger:   logger,
+		pipeline: pipeline, importer: importer,
+		logger: logger,
 	}
 	if len(repos) > 0 {
 		h.documentRepo = repos[0]
@@ -61,22 +68,32 @@ func (h *DocumentHandler) Upload(c *gin.Context) {
 	h.process(c, doc)
 }
 
-// ImportMarkdown 上传本地 Markdown 文件并写入知识库。
+// ImportDocument asynchronously imports a supported local document.
 // POST /api/v1/documents/import，multipart 字段名为 file，title 可选。
-func (h *DocumentHandler) ImportMarkdown(c *gin.Context) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxMarkdownBytes+(1<<20))
+func (h *DocumentHandler) ImportDocument(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxDocumentBytes+(1<<20))
 	header, err := c.FormFile("file")
 	if err != nil {
-		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "请通过 multipart/form-data 的 file 字段上传 Markdown 文件")
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			common.FailWithCode(c, http.StatusRequestEntityTooLarge, common.ErrCodeInvalidParam, "文件不能超过 50 MiB")
+			return
+		}
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "请通过 multipart/form-data 的 file 字段上传文件")
 		return
 	}
 	ext := strings.ToLower(filepath.Ext(header.Filename))
-	if ext != ".md" && ext != ".markdown" {
-		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "仅支持 .md 或 .markdown 文件")
+	docType, ok := map[string]string{".md": "markdown", ".markdown": "markdown", ".pdf": "pdf", ".docx": "docx", ".xlsx": "xlsx"}[ext]
+	if !ok {
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "仅支持 Markdown、PDF、DOCX 或 XLSX 文件")
 		return
 	}
-	if header.Size > maxMarkdownBytes {
-		common.FailWithCode(c, http.StatusRequestEntityTooLarge, common.ErrCodeInvalidParam, "Markdown 文件不能超过 10 MiB")
+	limit := int64(maxDocumentBytes)
+	if docType == "markdown" {
+		limit = maxMarkdownBytes
+	}
+	if header.Size > limit {
+		common.FailWithCode(c, http.StatusRequestEntityTooLarge, common.ErrCodeInvalidParam, fmt.Sprintf("文件不能超过 %d MiB", limit>>20))
 		return
 	}
 	file, err := header.Open()
@@ -85,29 +102,92 @@ func (h *DocumentHandler) ImportMarkdown(c *gin.Context) {
 		return
 	}
 	defer file.Close()
-	content, err := io.ReadAll(io.LimitReader(file, maxMarkdownBytes+1))
+	content, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "读取上传文件失败")
 		return
 	}
-	if len(content) > maxMarkdownBytes {
-		common.FailWithCode(c, http.StatusRequestEntityTooLarge, common.ErrCodeInvalidParam, "Markdown 文件不能超过 10 MiB")
+	if int64(len(content)) > limit {
+		common.FailWithCode(c, http.StatusRequestEntityTooLarge, common.ErrCodeInvalidParam, fmt.Sprintf("文件不能超过 %d MiB", limit>>20))
 		return
 	}
-	if len(content) == 0 || !utf8.Valid(content) {
-		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "Markdown 文件必须是非空 UTF-8 文本")
+	if len(content) == 0 {
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "文件不能为空")
+		return
+	}
+	if docType == "markdown" && !utf8.Valid(content) {
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "Markdown 文件必须是 UTF-8 文本")
+		return
+	}
+	if !validDocumentMagic(docType, content) {
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "文件内容与扩展名不匹配")
 		return
 	}
 	title := strings.TrimSpace(c.PostForm("title"))
 	if title == "" {
 		title = strings.TrimSuffix(filepath.Base(header.Filename), ext)
 	}
+	if strings.TrimSpace(title) == "" {
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "文档标题不能为空")
+		return
+	}
 	doc := &model.Document{
-		Title: title, Content: string(content), ContentType: "markdown",
-		Metadata:  map[string]string{"source_file": filepath.Base(header.Filename)},
+		Title: title, ContentType: docType, Filename: filepath.Base(header.Filename),
+		Metadata:  map[string]any{"source_file": filepath.Base(header.Filename)},
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
-	h.process(c, doc)
+	if h.importer == nil {
+		common.FailWithCode(c, http.StatusServiceUnavailable, common.ErrCodeInternal, "文档导入服务未配置")
+		return
+	}
+	resp, queued, err := h.importer.Submit(c.Request.Context(), doc, content)
+	if errors.Is(err, etl.ErrImportQueueFull) {
+		common.FailWithCode(c, http.StatusServiceUnavailable, common.ErrCodeInternal, err.Error())
+		return
+	}
+	if err != nil {
+		h.logger.Error("提交文档导入失败", zap.Error(err))
+		common.Fail(c, http.StatusInternalServerError, common.ErrInternal(err))
+		return
+	}
+	status := http.StatusOK
+	if queued || resp.Status == "processing" {
+		status = http.StatusAccepted
+	}
+	c.JSON(status, common.Result{Code: 0, Message: "success", Data: resp, TraceID: c.GetString("trace_id")})
+}
+
+func validDocumentMagic(docType string, data []byte) bool {
+	switch docType {
+	case "pdf":
+		return bytes.Contains(data[:min(len(data), 1024)], []byte("%PDF-"))
+	case "docx", "xlsx":
+		if len(data) < 4 || string(data[:2]) != "PK" {
+			return false
+		}
+		reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			return false
+		}
+		for _, file := range reader.File {
+			if file.Name != "[Content_Types].xml" {
+				continue
+			}
+			rc, err := file.Open()
+			if err != nil {
+				return false
+			}
+			content, _ := io.ReadAll(io.LimitReader(rc, 1<<20))
+			rc.Close()
+			if docType == "docx" {
+				return bytes.Contains(content, []byte("wordprocessingml.document"))
+			}
+			return bytes.Contains(content, []byte("spreadsheetml.sheet"))
+		}
+		return false
+	default:
+		return true
+	}
 }
 
 func (h *DocumentHandler) process(c *gin.Context, doc *model.Document) {
