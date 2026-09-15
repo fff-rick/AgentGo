@@ -25,10 +25,11 @@ type Tool interface {
 
 // ToolResult 工具执行结果
 type ToolResult struct {
-	Success    bool              `json:"success"`
-	Output     string            `json:"output"`
-	Error      string            `json:"error,omitempty"`
-	References []model.Reference `json:"references,omitempty"`
+	Success         bool              `json:"success"`
+	Output          string            `json:"output"`
+	Error           string            `json:"error,omitempty"`
+	References      []model.Reference `json:"references,omitempty"`
+	ToolDefinitions []model.ToolDef   `json:"-"`
 }
 
 // NewSuccessResult 创建成功的工具执行结果

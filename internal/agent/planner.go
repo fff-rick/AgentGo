@@ -29,6 +29,10 @@ const plannerSystemPrompt = `你是一个任务规划专家。请将用户的复
 
 可用工具定义（JSON）：%s`
 
+const toolSelectionPrompt = `你负责为任务选择工具。根据任务、历史上下文和工具目录，选择完成任务可能需要的工具。
+最多选择 %d 个，只返回 JSON：{"tools":["tool_name"]}；不需要工具时返回 {"tools":[]}。
+工具目录（不含参数 Schema）：%s`
+
 // Plan 执行计划
 type Plan struct {
 	Steps []PlanStep `json:"steps"`
@@ -69,9 +73,13 @@ func NewPlannerAgent(router *llm.Router, toolRouter *tool.Router, logger *zap.Lo
 }
 
 // Execute 执行复杂任务：生成计划 → 逐步执行 → 汇总结果
-func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model.LLMMessage) (*AgentResult, error) {
+func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model.LLMMessage, scope tool.Scope) (*AgentResult, error) {
+	definitions, err := p.planToolDefinitions(ctx, task, history, scope)
+	if err != nil {
+		return nil, fmt.Errorf("选择规划工具失败: %w", err)
+	}
 	// 阶段一：生成执行计划
-	plan, err := p.generatePlan(ctx, task, history)
+	plan, err := p.generatePlan(ctx, task, history, definitions)
 	if err != nil {
 		return nil, fmt.Errorf("生成执行计划失败: %w", err)
 	}
@@ -81,6 +89,10 @@ func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model
 	// 阶段二：按步骤执行计划
 	result := &AgentResult{}
 	stepResults := make(map[int]string) // 步骤编号 -> 执行结果
+	selected := make(map[string]struct{}, len(definitions))
+	for _, definition := range definitions {
+		selected[definition.Function.Name] = struct{}{}
+	}
 
 	for _, step := range plan.Steps {
 		// 检查依赖是否满足
@@ -98,10 +110,13 @@ func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model
 		input := step.toolInput()
 		var output string
 		if step.Tool != "" {
+			if _, ok := selected[step.Tool]; !ok {
+				return nil, fmt.Errorf("计划引用了未选择的工具 %q", step.Tool)
+			}
 			// 需要使用工具
 			observe.Emit(ctx, observe.Event{Type: observe.TypeToolCall, Stage: "tool", Tool: &model.ToolCallInfo{ToolName: step.Tool, Input: input}})
 			startTime := time.Now()
-			toolResult, err := p.toolRouter.Execute(ctx, step.Tool, input)
+			toolResult, err := p.toolRouter.ExecuteScoped(ctx, scope, step.Tool, input)
 			elapsed := time.Since(startTime)
 
 			if err != nil {
@@ -146,13 +161,10 @@ func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model
 }
 
 // generatePlan 调用 LLM 生成执行计划
-func (p *PlannerAgent) generatePlan(ctx context.Context, task string, history []model.LLMMessage) (*Plan, error) {
-	tools := p.toolRouter.ListAvailableToolDetails()
+func (p *PlannerAgent) generatePlan(ctx context.Context, task string, history []model.LLMMessage, tools []model.ToolDef) (*Plan, error) {
 	definitions := make([]model.FunctionDef, 0, len(tools))
 	for _, candidate := range tools {
-		definitions = append(definitions, model.FunctionDef{
-			Name: candidate.Name(), Description: candidate.Description(), Parameters: candidate.Parameters(),
-		})
+		definitions = append(definitions, candidate.Function)
 	}
 	toolJSON, err := json.Marshal(definitions)
 	if err != nil {
@@ -176,6 +188,70 @@ func (p *PlannerAgent) generatePlan(ctx context.Context, task string, history []
 	}
 
 	return &Plan{Steps: steps}, nil
+}
+
+func (p *PlannerAgent) planToolDefinitions(ctx context.Context, task string, history []model.LLMMessage, scope tool.Scope) ([]model.ToolDef, error) {
+	if !p.toolRouter.LazyLoadingEnabled() {
+		return p.toolRouter.InitialToolDefinitions(ctx, scope), nil
+	}
+	catalog := p.toolRouter.ToolCatalog(ctx, scope)
+	if len(catalog) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(catalog)
+	if err != nil {
+		return nil, err
+	}
+	messages := []model.LLMMessage{{Role: "system", Content: fmt.Sprintf(toolSelectionPrompt, p.toolRouter.LazyLoadThreshold(), encoded)}}
+	messages = append(messages, history...)
+	messages = append(messages, model.LLMMessage{Role: "user", Content: task})
+	resp, err := p.router.Chat(ctx, &model.LLMRequest{Messages: messages, Temperature: 0.1})
+	if err != nil {
+		return nil, err
+	}
+	var selection struct {
+		Tools []string `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(resp.Content), &selection); err != nil {
+		return nil, fmt.Errorf("解析工具选择失败: %w", err)
+	}
+	if len(selection.Tools) > p.toolRouter.LazyLoadThreshold() {
+		return nil, fmt.Errorf("选择工具数量 %d 超过上限 %d", len(selection.Tools), p.toolRouter.LazyLoadThreshold())
+	}
+	available := make(map[string]struct{}, len(catalog))
+	for _, candidate := range catalog {
+		available[candidate.Name] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(selection.Tools))
+	for _, name := range selection.Tools {
+		if _, ok := available[name]; !ok {
+			return nil, fmt.Errorf("选择了目录外工具 %q", name)
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return nil, fmt.Errorf("重复选择工具 %q", name)
+		}
+		seen[name] = struct{}{}
+	}
+	if len(selection.Tools) == 0 {
+		return nil, nil
+	}
+	loaded, err := p.toolRouter.LoadTools(ctx, scope, selection.Tools)
+	if err != nil {
+		return nil, err
+	}
+	if !loaded.Success {
+		return nil, fmt.Errorf("加载工具失败: %s", loaded.Error)
+	}
+	selectedDefinitions := make([]model.ToolDef, 0, len(selection.Tools))
+	for _, definition := range loaded.ToolDefinitions {
+		if _, ok := seen[definition.Function.Name]; ok {
+			selectedDefinitions = append(selectedDefinitions, definition)
+		}
+	}
+	if len(selectedDefinitions) != len(selection.Tools) {
+		return nil, fmt.Errorf("加载工具不完整: 选择 %d 个，获得 %d 个", len(selection.Tools), len(selectedDefinitions))
+	}
+	return selectedDefinitions, nil
 }
 
 // summarize 汇总步骤执行结果，生成最终答案

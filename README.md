@@ -173,8 +173,12 @@ APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 | `APP_MEMORY_SEMANTIC_COLLECTION` | `semantic_memory_v1` | 用户隔离的长期语义记忆 collection |
 | `APP_CONTEXT_MAX_INPUT_TOKENS` | `30000` | 触发会话压缩的估算输入预算 |
 | `APP_CONTEXT_RECENT_MESSAGES` | `20` | 压缩后优先保留的最近消息数 |
+| `APP_TOOLS_LAZY_LOAD_THRESHOLD` | `3` | 每个会话最多保留的业务工具 Schema 数量 |
+| `APP_TOOLS_MAX_DISCOVERY_CALLS` | `4` | 单次 Agent Run 最多允许的 `list_tools` 控制调用次数 |
 
 文档上传会按规范化后的内容类型和标题生成稳定文档 ID，并按原始内容生成 ContentHash；同一文档内容未变化时跳过处理，内容变化时覆盖 PostgreSQL 索引和 Milvus 向量并清理多余旧分块。分块经 Ollama 批量向量化后 Upsert 到 Milvus，同时通过纯 Go 中文分词写入 PostgreSQL 倒排词频索引并使用 BM25 排序。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。
+
+工具 Schema 按会话惰性加载：每轮默认只携带 `list_tools` 和最多 3 个最近使用的业务工具。`options.tools` 缺省或为 `null` 时允许全部注册工具，显式 `[]` 时禁用全部业务工具，非空数组作为工具允许列表；未知工具名会返回 HTTP 400。
 
 从旧版“按内容生成文档 ID”升级时，需要先清空 PostgreSQL 文档索引和配置的 Milvus 文档 collection，再重新导入知识库；服务不会自动删除存量知识。验证 Milvus 数据链路：
 

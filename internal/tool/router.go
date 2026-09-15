@@ -16,22 +16,40 @@ import (
 // 根据工具名称从注册中心获取工具并执行，提供超时控制和错误处理。
 type Router struct {
 	registry *Registry
+	manager  *Manager
 	logger   *zap.Logger
 	timeout  time.Duration // 默认工具执行超时
 }
 
 // NewRouter 创建工具路由器
-func NewRouter(registry *Registry, logger *zap.Logger) *Router {
-	return &Router{
+func NewRouter(registry *Registry, logger *zap.Logger, managers ...*Manager) *Router {
+	router := &Router{
 		registry: registry,
 		logger:   logger,
 		timeout:  30 * time.Second,
 	}
+	if len(managers) > 0 {
+		router.manager = managers[0]
+	}
+	return router
 }
 
 // Execute 根据工具名称路由并执行工具调用。
 // 自动添加超时控制，记录执行耗时。
 func (r *Router) Execute(ctx context.Context, toolName, input string) (*ToolResult, error) {
+	return r.ExecuteScoped(ctx, Scope{}, toolName, input)
+}
+
+func (r *Router) ExecuteScoped(ctx context.Context, scope Scope, toolName, input string) (*ToolResult, error) {
+	if toolName == ListToolsName {
+		if r.manager == nil {
+			return nil, common.ErrToolNotFound(toolName)
+		}
+		return r.manager.Handle(ctx, scope, input)
+	}
+	if !scope.Allows(toolName) {
+		return nil, common.ErrToolNotFound(toolName)
+	}
 	t, ok := r.registry.Get(toolName)
 	if !ok {
 		return nil, common.ErrToolNotFound(toolName)
@@ -42,6 +60,9 @@ func (r *Router) Execute(ctx context.Context, toolName, input string) (*ToolResu
 	defer cancel()
 
 	start := time.Now()
+	if r.manager != nil {
+		r.manager.RecordUse(ctx, scope, toolName)
+	}
 	r.logger.Info("开始执行工具",
 		zap.String("tool", toolName),
 		zap.String("input", truncate(input, 200)),
@@ -72,13 +93,17 @@ func (r *Router) Execute(ctx context.Context, toolName, input string) (*ToolResu
 // BatchExecute 并发执行多个工具调用。
 // 使用 goroutine 并发执行，通过 channel 收集结果。
 func (r *Router) BatchExecute(ctx context.Context, calls []ToolCall) []*ToolCallResult {
+	return r.BatchExecuteScoped(ctx, Scope{}, calls)
+}
+
+func (r *Router) BatchExecuteScoped(ctx context.Context, scope Scope, calls []ToolCall) []*ToolCallResult {
 	results := make([]*ToolCallResult, len(calls))
 	ch := make(chan indexedResult, len(calls))
 
 	for i, call := range calls {
 		go func(idx int, c ToolCall) {
 			start := time.Now()
-			result, err := r.Execute(ctx, c.Name, c.Input)
+			result, err := r.ExecuteScoped(ctx, scope, c.Name, c.Input)
 			ch <- indexedResult{Index: idx, Result: result, Err: err, Duration: time.Since(start)}
 		}(i, call)
 	}
@@ -94,6 +119,61 @@ func (r *Router) BatchExecute(ctx context.Context, calls []ToolCall) []*ToolCall
 	}
 
 	return results
+}
+
+func (r *Router) ValidateAllowedTools(names []string) error {
+	if r.manager != nil {
+		return r.manager.ValidateAllowed(names)
+	}
+	for _, name := range names {
+		if name == ListToolsName {
+			return fmt.Errorf("%s 是保留工具名", ListToolsName)
+		}
+		if _, ok := r.registry.Get(name); !ok {
+			return fmt.Errorf("工具 %q 未注册", name)
+		}
+	}
+	return nil
+}
+
+func (r *Router) InitialToolDefinitions(ctx context.Context, scope Scope) []model.ToolDef {
+	if r.manager != nil {
+		return r.manager.InitialDefinitions(ctx, scope)
+	}
+	definitions := r.ListToolDefinitions()
+	if !scope.Restricted {
+		return definitions
+	}
+	filtered := definitions[:0]
+	for _, candidate := range definitions {
+		if scope.Allows(candidate.Function.Name) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
+}
+
+func (r *Router) ToolCatalog(ctx context.Context, scope Scope) []CatalogEntry {
+	if r.manager == nil {
+		return nil
+	}
+	return r.manager.Catalog(ctx, scope)
+}
+
+func (r *Router) LoadTools(ctx context.Context, scope Scope, names []string) (*ToolResult, error) {
+	if r.manager == nil {
+		return nil, fmt.Errorf("Lazy Tool Manager 未配置")
+	}
+	return r.manager.Load(ctx, scope, names)
+}
+
+func (r *Router) LazyLoadingEnabled() bool { return r.manager != nil }
+
+func (r *Router) LazyLoadThreshold() int {
+	if r.manager == nil {
+		return len(r.registry.List())
+	}
+	return r.manager.Threshold()
 }
 
 // ListAvailableTools 返回注册中心中所有可用工具的名称

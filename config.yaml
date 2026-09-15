@@ -28,3 +28,7 @@ context:
   max_input_tokens: 30000
   recent_messages: 20
   summary_max_tokens: 2000
+
+tools:
+  lazy_load_threshold: 3
+  max_discovery_calls: 4
