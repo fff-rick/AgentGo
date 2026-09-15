@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -91,15 +92,15 @@ func TestSessionKeepsFullHistoryAndRecentWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	for index := 0; index < 25; index++ {
-		if err := sessions.AppendMessage(context.Background(), session.ID, model.Message{Role: "user", Content: "message"}); err != nil {
+		if err := sessions.AppendMessage(context.Background(), session, model.Message{Role: "user", Content: "message"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	all, err := sessions.GetMessages(context.Background(), session.ID)
+	all, err := sessions.GetMessages(context.Background(), session)
 	if err != nil {
 		t.Fatal(err)
 	}
-	recent, err := sessions.GetRecentMessages(context.Background(), session.ID, 20)
+	recent, err := sessions.GetRecentMessages(context.Background(), session, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,5 +109,22 @@ func TestSessionKeepsFullHistoryAndRecentWindow(t *testing.T) {
 	}
 	if store.expires[sessions.messagesKey(session.ID)] != 30*24*time.Hour {
 		t.Fatal("真实消息列表没有刷新 TTL")
+	}
+}
+
+func TestSessionOperationsRejectMissingValidatedSession(t *testing.T) {
+	store := newCacheStub()
+	sessions := NewSessionManager(store, user.NewManager(store, time.Hour), time.Hour)
+	if err := sessions.AppendMessage(context.Background(), nil, model.Message{}); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("AppendMessage err=%v", err)
+	}
+	if _, err := sessions.GetMessages(context.Background(), nil); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("GetMessages err=%v", err)
+	}
+	if _, err := sessions.GetRecentMessages(context.Background(), nil, 0); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("GetRecentMessages err=%v", err)
+	}
+	if err := sessions.SaveSummary(context.Background(), nil, SessionSummary{}); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("SaveSummary err=%v", err)
 	}
 }

@@ -56,6 +56,7 @@ type Document struct {
 	Title       string            `json:"title"`
 	Content     string            `json:"content"`
 	ContentType string            `json:"content_type"`
+	ContentHash string            `json:"-"`
 	Tags        []string          `json:"tags"`
 	Status      string            `json:"status"`
 	ChunkCount  int               `json:"chunk_count"`

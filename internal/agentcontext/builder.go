@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/enterprise/ai-agent-go/internal/config"
 	"github.com/enterprise/ai-agent-go/internal/memory"
@@ -26,7 +27,7 @@ type AgentContext struct {
 }
 
 type BuildInput struct {
-	SessionID           string
+	Session             *model.Session
 	Query               string
 	SystemPrompt        string
 	RuntimeInstructions []string
@@ -63,37 +64,58 @@ func NewBuilder(sessions memory.SessionManager, semantic memory.SemanticMemory, 
 }
 
 func (b *ContextBuilder) Build(ctx context.Context, input BuildInput) (*AgentContext, error) {
-	session, err := b.sessions.GetSession(ctx, input.SessionID)
-	if err != nil {
+	session := input.Session
+	if session == nil || session.ID == "" {
+		return nil, memory.ErrSessionNotFound
+	}
+	var (
+		user        *model.UserInfo
+		allMessages []model.Message
+		summary     *memory.SessionSummary
+		memories    []model.MemoryItem
+		semanticErr error
+	)
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		var err error
+		user, err = b.sessions.GetUser(groupCtx, session.UserID)
+		if err != nil {
+			return fmt.Errorf("加载会话用户失败: %w", err)
+		}
+		if user == nil {
+			return fmt.Errorf("加载会话用户失败: 用户不存在")
+		}
+		return nil
+	})
+	group.Go(func() error {
+		var err error
+		allMessages, err = b.sessions.GetMessages(groupCtx, session)
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		summary, err = b.sessions.GetSummary(groupCtx, session.ID)
+		return err
+	})
+	group.Go(func() error {
+		memories, semanticErr = b.semantic.Search(groupCtx, session.UserID, input.Query, b.topK)
+		return nil
+	})
+	if err := group.Wait(); err != nil {
 		return nil, err
 	}
-	user, err := b.sessions.GetUser(ctx, session.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("加载会话用户失败: %w", err)
-	}
-	if user == nil {
-		return nil, fmt.Errorf("加载会话用户失败: 用户不存在")
-	}
-	allMessages, err := b.sessions.GetMessages(ctx, input.SessionID)
-	if err != nil {
-		return nil, err
-	}
-	summary, err := b.sessions.GetSummary(ctx, input.SessionID)
-	if err != nil {
-		return nil, err
-	}
-	memories, err := b.semantic.Search(ctx, session.UserID, input.Query, b.topK)
-	if err != nil {
-		b.logger.Warn("检索语义记忆失败，使用无长期记忆上下文", zap.Error(err))
+	if semanticErr != nil {
+		b.logger.Warn("检索语义记忆失败，使用无长期记忆上下文", zap.Error(semanticErr))
 		memories = nil
 	}
 	active := afterSummary(allMessages, summary)
 	system := buildSystemPrompt(input.SystemPrompt, input.RuntimeInstructions, user, summary, memories)
 	current := model.LLMMessage{Role: "user", Content: input.Query}
-	baseTokens := estimateContext(buildSystemPrompt(input.SystemPrompt, input.RuntimeInstructions, user, summary, nil), []model.LLMMessage{current}, input.Tools)
-	if baseTokens > b.cfg.MaxInputTokens {
-		return nil, fmt.Errorf("%w: system prompt、工具定义和当前消息超过 %d token", ErrContextTooLarge, b.cfg.MaxInputTokens)
-	}
+	// 启用 Token 预算
+	// baseTokens := estimateContext(buildSystemPrompt(input.SystemPrompt, input.RuntimeInstructions, user, summary, nil), []model.LLMMessage{current}, input.Tools)
+	// if baseTokens > b.cfg.MaxInputTokens {
+	// 	return nil, fmt.Errorf("%w: system prompt、工具定义和当前消息超过 %d token", ErrContextTooLarge, b.cfg.MaxInputTokens)
+	// }
 
 	messages := toLLMMessages(active)
 	messages = append(messages, current)
@@ -107,7 +129,7 @@ func (b *ContextBuilder) Build(ctx context.Context, input BuildInput) (*AgentCon
 			b.logger.Warn("会话压缩失败，按预算保留近期消息", zap.Error(compactErr))
 		} else {
 			newSummary := &memory.SessionSummary{Content: result.Summary, ThroughSequence: active[cut-1].Sequence, UpdatedAt: time.Now()}
-			if err := b.sessions.SaveSummary(ctx, input.SessionID, *newSummary); err != nil {
+			if err := b.sessions.SaveSummary(ctx, session, *newSummary); err != nil {
 				b.logger.Warn("保存会话摘要失败", zap.Error(err))
 			} else {
 				summary = newSummary

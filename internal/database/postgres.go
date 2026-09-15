@@ -60,6 +60,7 @@ func (c *Client) migrate(ctx context.Context) error {
     metadata jsonb NOT NULL DEFAULT '{}',
     status text NOT NULL DEFAULT 'completed',
     chunk_count integer NOT NULL DEFAULT 0,
+    content_hash text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 )`, `CREATE TABLE IF NOT EXISTS document_chunks (
@@ -70,7 +71,8 @@ func (c *Client) migrate(ctx context.Context) error {
 	token_count integer NOT NULL DEFAULT -1,
 	created_at timestamptz NOT NULL DEFAULT now(),
 	UNIQUE (doc_id, chunk_index)
-)`, `ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS token_count integer NOT NULL DEFAULT -1`,
+)`, `ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash text NOT NULL DEFAULT ''`,
+		`ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS token_count integer NOT NULL DEFAULT -1`,
 		`CREATE TABLE IF NOT EXISTS document_terms (
 	chunk_id text NOT NULL REFERENCES document_chunks(id) ON DELETE CASCADE,
 	term varchar(128) NOT NULL,
@@ -135,9 +137,9 @@ func (c *Client) Healthy(ctx context.Context) bool { return c.db.PingContext(ctx
 
 // FindDocument returns the persisted processing status used by the document API.
 func (c *Client) FindDocument(ctx context.Context, id string) (*model.DocumentResponse, error) {
-	const query = `SELECT id, title, status, chunk_count, created_at FROM documents WHERE id = $1`
+	const query = `SELECT id, title, status, chunk_count, created_at, content_hash FROM documents WHERE id = $1`
 	var doc model.DocumentResponse
-	if err := c.db.QueryRowContext(ctx, query, id).Scan(&doc.DocID, &doc.Title, &doc.Status, &doc.ChunkCount, &doc.CreatedAt); err != nil {
+	if err := c.db.QueryRowContext(ctx, query, id).Scan(&doc.DocID, &doc.Title, &doc.Status, &doc.ChunkCount, &doc.CreatedAt, &doc.ContentHash); err != nil {
 		return nil, err
 	}
 	return &doc, nil
@@ -168,13 +170,14 @@ func (c *Client) IndexDocument(ctx context.Context, doc *model.Document, chunks 
 	defer tx.Rollback()
 
 	const upsert = `INSERT INTO documents
-    (id, title, content_type, tags, metadata, status, chunk_count, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8)
+    (id, title, content_type, tags, metadata, status, chunk_count, content_hash, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8, $9)
 ON CONFLICT (id) DO UPDATE SET
     title = EXCLUDED.title, content_type = EXCLUDED.content_type, tags = EXCLUDED.tags,
     metadata = EXCLUDED.metadata, status = EXCLUDED.status,
-    chunk_count = EXCLUDED.chunk_count, updated_at = EXCLUDED.updated_at`
-	if _, err := tx.ExecContext(ctx, upsert, doc.ID, doc.Title, doc.ContentType, tags, string(metadata), len(chunks), doc.CreatedAt, doc.UpdatedAt); err != nil {
+    chunk_count = EXCLUDED.chunk_count, content_hash = EXCLUDED.content_hash,
+    updated_at = EXCLUDED.updated_at`
+	if _, err := tx.ExecContext(ctx, upsert, doc.ID, doc.Title, doc.ContentType, tags, string(metadata), len(chunks), doc.ContentHash, doc.CreatedAt, doc.UpdatedAt); err != nil {
 		return fmt.Errorf("保存文档失败: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM document_chunks WHERE doc_id = $1", doc.ID); err != nil {

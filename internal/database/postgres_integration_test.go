@@ -34,10 +34,10 @@ func TestPostgresKeywordSearchAndDatabaseToolIntegration(t *testing.T) {
 	}
 	defer client.Close()
 
-	docID, chunkID, secondChunkID, now := uuid.NewString(), uuid.NewString(), uuid.NewString(), time.Now()
+	docID, chunkID, secondChunkID, now := uuid.NewString(), uuid.NewString(), uuid.NewString(), time.Now().UTC().Truncate(time.Microsecond)
 	marker := "agentgotest" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	defer client.DB().ExecContext(context.Background(), "DELETE FROM documents WHERE id = $1", docID)
-	doc := &model.Document{ID: docID, Title: "Hybrid Test", ContentType: "text", CreatedAt: now, UpdatedAt: now}
+	doc := &model.Document{ID: docID, Title: "Hybrid Test", ContentType: "text", ContentHash: "hash-v1", CreatedAt: now, UpdatedAt: now}
 	chunks := []model.DocumentChunk{
 		{ID: chunkID, DocID: docID, Content: "PostgreSQL 提供中文分词和 BM25 混合检索 " + marker + " " + marker + " " + marker, ChunkIndex: 0, CreatedAt: now},
 		{ID: secondChunkID, DocID: docID, Content: "PostgreSQL 提供中文分词和 BM25 混合检索 " + marker, ChunkIndex: 1, CreatedAt: now},
@@ -70,6 +70,23 @@ func TestPostgresKeywordSearchAndDatabaseToolIntegration(t *testing.T) {
 	result, err := dbTool.Execute(ctx, string(input))
 	if err != nil || !result.Success || result.Output == "" {
 		t.Fatalf("database tool result = %#v, error = %v", result, err)
+	}
+
+	doc.ContentHash = "hash-v2"
+	doc.CreatedAt = now.Add(24 * time.Hour)
+	doc.UpdatedAt = now.Add(time.Hour)
+	if err := client.IndexDocument(ctx, doc, chunks[:1]); err != nil {
+		t.Fatal(err)
+	}
+	var contentHash string
+	var chunkCount int
+	var createdAt, updatedAt time.Time
+	if err := client.DB().QueryRowContext(ctx, `SELECT content_hash, chunk_count, created_at, updated_at FROM documents WHERE id = $1`, docID).
+		Scan(&contentHash, &chunkCount, &createdAt, &updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if contentHash != "hash-v2" || chunkCount != 1 || !createdAt.Equal(now) || !updatedAt.Equal(doc.UpdatedAt) {
+		t.Fatalf("updated document hash=%q chunks=%d created_at=%v updated_at=%v", contentHash, chunkCount, createdAt, updatedAt)
 	}
 }
 

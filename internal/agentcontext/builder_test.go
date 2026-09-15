@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -22,19 +23,19 @@ func (*sessionStub) CreateSession(context.Context, model.UserInfo) (*model.Sessi
 	return nil, nil
 }
 func (*sessionStub) GetSession(context.Context, string) (*model.Session, error) {
-	return &model.Session{ID: "session", UserID: "user-1"}, nil
+	panic("ContextBuilder must use the preloaded session")
 }
 func (*sessionStub) GetUser(context.Context, string) (*model.UserInfo, error) {
 	return &model.UserInfo{UserID: "user-1", DisplayName: "Xin"}, nil
 }
-func (*sessionStub) AppendMessage(context.Context, string, model.Message) error { return nil }
-func (s *sessionStub) GetMessages(context.Context, string) ([]model.Message, error) {
+func (*sessionStub) AppendMessage(context.Context, *model.Session, model.Message) error { return nil }
+func (s *sessionStub) GetMessages(context.Context, *model.Session) ([]model.Message, error) {
 	return append([]model.Message(nil), s.messages...), nil
 }
-func (*sessionStub) GetRecentMessages(context.Context, string, int) ([]model.Message, error) {
+func (*sessionStub) GetRecentMessages(context.Context, *model.Session, int) ([]model.Message, error) {
 	return nil, nil
 }
-func (s *sessionStub) SaveSummary(_ context.Context, _ string, summary memory.SessionSummary) error {
+func (s *sessionStub) SaveSummary(_ context.Context, _ *model.Session, summary memory.SessionSummary) error {
 	s.summary = &summary
 	return nil
 }
@@ -48,6 +49,45 @@ func (s semanticMemoryStub) Search(context.Context, string, string, int) ([]mode
 	return s.items, nil
 }
 func (semanticMemoryStub) Save(context.Context, model.MemoryItem) error { return nil }
+
+type blockingSessionStub struct {
+	*sessionStub
+	started chan<- string
+	release <-chan struct{}
+}
+
+func (s *blockingSessionStub) wait(name string) {
+	s.started <- name
+	<-s.release
+}
+
+func (s *blockingSessionStub) GetUser(ctx context.Context, userID string) (*model.UserInfo, error) {
+	s.wait("user")
+	return s.sessionStub.GetUser(ctx, userID)
+}
+
+func (s *blockingSessionStub) GetMessages(ctx context.Context, session *model.Session) ([]model.Message, error) {
+	s.wait("messages")
+	return s.sessionStub.GetMessages(ctx, session)
+}
+
+func (s *blockingSessionStub) GetSummary(ctx context.Context, sessionID string) (*memory.SessionSummary, error) {
+	s.wait("summary")
+	return s.sessionStub.GetSummary(ctx, sessionID)
+}
+
+type blockingSemanticMemory struct {
+	started chan<- string
+	release <-chan struct{}
+}
+
+func (s blockingSemanticMemory) Search(context.Context, string, string, int) ([]model.MemoryItem, error) {
+	s.started <- "memories"
+	<-s.release
+	return nil, nil
+}
+
+func (blockingSemanticMemory) Save(context.Context, model.MemoryItem) error { return nil }
 
 type compactorStub struct {
 	input CompactionInput
@@ -74,7 +114,7 @@ func TestBuilderFallsBackWhenCompactionFails(t *testing.T) {
 	}
 	compactor := &compactorStub{err: errors.New("LLM unavailable")}
 	builder := NewBuilder(sessions, semanticMemoryStub{}, compactor, config.ContextConfig{MaxInputTokens: 500, RecentMessages: 2, SummaryMaxTokens: 100}, 5, zap.NewNop())
-	result, err := builder.Build(context.Background(), BuildInput{SessionID: "session", Query: "继续", SystemPrompt: "system"})
+	result, err := builder.Build(context.Background(), BuildInput{Session: &model.Session{ID: "session", UserID: "user-1"}, Query: "继续", SystemPrompt: "system"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +131,7 @@ func TestBuilderCompactsOldMessagesAndKeepsRawHistory(t *testing.T) {
 	compactor := &compactorStub{}
 	builder := NewBuilder(sessions, semanticMemoryStub{items: []model.MemoryItem{{UserID: "user-1", Kind: model.MemoryPreference, Content: "喜欢 Go"}}}, compactor,
 		config.ContextConfig{MaxInputTokens: 500, RecentMessages: 2, SummaryMaxTokens: 100}, 5, zap.NewNop())
-	result, err := builder.Build(context.Background(), BuildInput{SessionID: "session", Query: "继续", SystemPrompt: "system"})
+	result, err := builder.Build(context.Background(), BuildInput{Session: &model.Session{ID: "session", UserID: "user-1"}, Query: "继续", SystemPrompt: "system"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +141,7 @@ func TestBuilderCompactsOldMessagesAndKeepsRawHistory(t *testing.T) {
 	if len(result.Messages) != 3 || len(sessions.messages) != 5 || !strings.Contains(result.SystemPrompt, "喜欢 Go") {
 		t.Fatalf("context messages=%d raw=%d system=%q", len(result.Messages), len(sessions.messages), result.SystemPrompt)
 	}
-	if _, err := builder.Build(context.Background(), BuildInput{SessionID: "session", Query: "再次继续", SystemPrompt: "system"}); err != nil {
+	if _, err := builder.Build(context.Background(), BuildInput{Session: &model.Session{ID: "session", UserID: "user-1"}, Query: "再次继续", SystemPrompt: "system"}); err != nil {
 		t.Fatal(err)
 	}
 	if compactor.calls != 1 {
@@ -111,8 +151,45 @@ func TestBuilderCompactsOldMessagesAndKeepsRawHistory(t *testing.T) {
 
 func TestBuilderRejectsOversizedCurrentInput(t *testing.T) {
 	builder := NewBuilder(&sessionStub{}, semanticMemoryStub{}, &compactorStub{}, config.ContextConfig{MaxInputTokens: 20, RecentMessages: 20, SummaryMaxTokens: 10}, 5, zap.NewNop())
-	_, err := builder.Build(context.Background(), BuildInput{SessionID: "session", Query: strings.Repeat("界", 100), SystemPrompt: "system"})
+	_, err := builder.Build(context.Background(), BuildInput{Session: &model.Session{ID: "session", UserID: "user-1"}, Query: strings.Repeat("界", 100), SystemPrompt: "system"})
 	if !errors.Is(err, ErrContextTooLarge) {
 		t.Fatalf("err=%v, want context_too_large", err)
+	}
+}
+
+func TestBuilderLoadsIndependentContextConcurrently(t *testing.T) {
+	started := make(chan string, 4)
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+
+	sessions := &blockingSessionStub{sessionStub: &sessionStub{}, started: started, release: release}
+	semantic := blockingSemanticMemory{started: started, release: release}
+	builder := NewBuilder(sessions, semantic, &compactorStub{}, config.ContextConfig{MaxInputTokens: 1000}, 5, zap.NewNop())
+	done := make(chan error, 1)
+	go func() {
+		_, err := builder.Build(context.Background(), BuildInput{Session: &model.Session{ID: "session", UserID: "user-1"}, Query: "continue", SystemPrompt: "system"})
+		done <- err
+	}()
+
+	seen := make(map[string]bool, 4)
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for len(seen) < 4 {
+		select {
+		case name := <-started:
+			seen[name] = true
+		case <-timer.C:
+			t.Fatalf("context loads did not run concurrently; started=%v", seen)
+		}
+	}
+	close(release)
+	released = true
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

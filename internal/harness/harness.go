@@ -50,7 +50,7 @@ type AgentHarness struct {
 }
 
 type RunRequest struct {
-	SessionID           string
+	Session             *model.Session
 	Message             string
 	RuntimeInstructions []string
 	Mode                string
@@ -69,8 +69,8 @@ func New(loop agentloop.AgentLoop, planner PlanningExecutor, contexts agentconte
 }
 
 func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (*RunResult, error) {
-	if req == nil || req.SessionID == "" || req.Message == "" {
-		return nil, fmt.Errorf("session_id 和 message 不能为空")
+	if req == nil || req.Session == nil || req.Session.ID == "" || req.Message == "" {
+		return nil, fmt.Errorf("session 和 message 不能为空")
 	}
 	if req.Mode != "" && req.Mode != model.ExecutionModeAgent && req.Mode != model.ExecutionModePlanner {
 		return nil, fmt.Errorf("不支持的执行模式 %q", req.Mode)
@@ -80,14 +80,11 @@ func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (*RunResult, er
 		ctx, cancel = context.WithTimeout(ctx, h.timeout)
 		defer cancel()
 	}
-	session, err := h.sessions.GetSession(ctx, req.SessionID)
-	if err != nil {
-		return nil, err
-	}
+	session := req.Session
 	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "harness", Message: "正在加载会话上下文"})
 	definitions := h.tools.ListToolDefinitions()
 	agentContext, err := h.contexts.Build(ctx, agentcontext.BuildInput{
-		SessionID: req.SessionID, Query: req.Message, SystemPrompt: systemPrompt,
+		Session: session, Query: req.Message, SystemPrompt: systemPrompt,
 		RuntimeInstructions: req.RuntimeInstructions, Tools: definitions,
 	})
 	if err != nil {
@@ -122,16 +119,19 @@ func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (*RunResult, er
 			h.logger.Warn("Agent Hook 执行失败", zap.Error(err))
 		}
 	}
-	if err := h.sessions.AppendMessage(ctx, req.SessionID, model.Message{Role: "user", Content: req.Message}); err != nil {
+	if err := h.sessions.AppendMessage(ctx, session, model.Message{Role: "user", Content: req.Message}); err != nil {
 		h.logger.Warn("保存用户消息失败", zap.Error(err))
 	}
-	if err := h.sessions.AppendMessage(ctx, req.SessionID, model.Message{Role: "assistant", Content: result.Answer}); err != nil {
+	if err := h.sessions.AppendMessage(ctx, session, model.Message{Role: "assistant", Content: result.Answer}); err != nil {
 		h.logger.Warn("保存助手消息失败", zap.Error(err))
 	}
 	if h.extractor != nil {
-		if err := h.extractor.ExtractAndSave(ctx, session.UserID, session.ID, req.Message, result.Answer); err != nil {
-			h.logger.Warn("提取语义记忆失败", zap.Error(err), zap.String("session_id", session.ID), zap.String("user_id", session.UserID))
-		}
+		// ponytail: best-effort goroutine; use a durable queue when extraction must survive process exit.
+		go func(userID, sessionID, question, answer string) {
+			if err := h.extractor.ExtractAndSave(context.Background(), userID, sessionID, question, answer); err != nil {
+				h.logger.Warn("提取语义记忆失败", zap.Error(err), zap.String("session_id", sessionID), zap.String("user_id", userID))
+			}
+		}(session.UserID, session.ID, req.Message, result.Answer)
 	}
 	if len(result.References) > 0 {
 		observe.Emit(ctx, observe.Event{Type: observe.TypeReferences, Stage: "knowledge_search", Message: fmt.Sprintf("检索到 %d 条相关引用", len(result.References)), References: result.References})

@@ -71,9 +71,10 @@ type LLMToolCall struct {
 
 // DocumentResponse 文档处理响应
 type DocumentResponse struct {
-	DocID      string    `json:"doc_id"`
-	Title      string    `json:"title"`
-	Status     string    `json:"status"` // processing / completed / failed
-	ChunkCount int       `json:"chunk_count"`
-	CreatedAt  time.Time `json:"created_at"`
+	DocID       string    `json:"doc_id"`
+	Title       string    `json:"title"`
+	Status      string    `json:"status"` // processing / completed / failed
+	ChunkCount  int       `json:"chunk_count"`
+	CreatedAt   time.Time `json:"created_at"`
+	ContentHash string    `json:"-"`
 }
