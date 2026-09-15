@@ -48,6 +48,12 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.mode 只支持 agent 或 planner")
 		return
 	}
+	if req.Options != nil && req.Options.Tools != nil {
+		if err := h.orchestrator.ValidateAllowedTools(req.Options.Tools); err != nil {
+			common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.tools 无效: "+err.Error())
+			return
+		}
+	}
 	session, err := h.sessions.GetSession(c.Request.Context(), req.SessionID)
 	if err != nil {
 		h.writeChatError(c, err)
@@ -83,6 +89,12 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 	if !validExecutionMode(req.Options) {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.mode 只支持 agent 或 planner")
 		return
+	}
+	if req.Options != nil && req.Options.Tools != nil {
+		if err := h.orchestrator.ValidateAllowedTools(req.Options.Tools); err != nil {
+			common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.tools 无效: "+err.Error())
+			return
+		}
 	}
 	session, err := h.sessions.GetSession(c.Request.Context(), req.SessionID)
 	if err != nil {

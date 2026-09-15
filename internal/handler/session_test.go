@@ -18,6 +18,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/harness"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/tool"
 )
 
 type sessionManagerStub struct {
@@ -50,9 +51,17 @@ func (chatContextStub) Build(_ context.Context, input agentcontext.BuildInput) (
 	return &agentcontext.AgentContext{Messages: []model.LLMMessage{{Role: "user", Content: input.Query}}}, nil
 }
 
+type recordingChatContext struct{ input agentcontext.BuildInput }
+
+func (c *recordingChatContext) Build(_ context.Context, input agentcontext.BuildInput) (*agentcontext.AgentContext, error) {
+	c.input = input
+	return &agentcontext.AgentContext{Messages: []model.LLMMessage{{Role: "user", Content: input.Query}}, Tools: input.Tools}, nil
+}
+
 type chatToolsStub struct{}
 
-func (chatToolsStub) ListToolDefinitions() []model.ToolDef { return nil }
+func (chatToolsStub) InitialToolDefinitions(context.Context, tool.Scope) []model.ToolDef { return nil }
+func (chatToolsStub) ValidateAllowedTools([]string) error                                { return nil }
 
 func TestChatEndpointsRejectUnknownSessionBeforeRunningAgent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -88,7 +97,7 @@ func TestChatEndpointsReadSessionOnce(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, path := range []string{"/api/v1/chat", "/api/v1/chat/stream"} {
 		manager := &sessionManagerStub{}
-		agentHarness := harness.New(chatLoopStub{}, nil, chatContextStub{}, manager, nil, chatToolsStub{}, nil, 2, time.Second, zap.NewNop())
+		agentHarness := harness.New(chatLoopStub{}, nil, chatContextStub{}, manager, nil, chatToolsStub{}, nil, 2, 4, time.Second, zap.NewNop())
 		handler := NewChatHandler(agent.NewOrchestrator(agentHarness), manager, zap.NewNop())
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{"session_id":"session-1","message":"hello"}`))
@@ -103,6 +112,45 @@ func TestChatEndpointsReadSessionOnce(t *testing.T) {
 		if recorder.Code != http.StatusOK || manager.getCalls != 1 {
 			t.Fatalf("path=%s status=%d GetSession calls=%d body=%s", path, recorder.Code, manager.getCalls, recorder.Body.String())
 		}
+	}
+}
+
+func TestChatToolsAllowlistValidationAndExplicitEmptyList(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	registry := tool.NewRegistry()
+	manager := tool.NewManager(registry, nil, 3, time.Hour, zap.NewNop())
+	toolRouter := tool.NewRouter(registry, zap.NewNop(), manager)
+	sessions := &sessionManagerStub{}
+	contexts := &recordingChatContext{}
+	agentHarness := harness.New(chatLoopStub{}, nil, contexts, sessions, nil, toolRouter, nil, 2, 4, time.Second, zap.NewNop())
+	handler := NewChatHandler(agent.NewOrchestrator(agentHarness), sessions, zap.NewNop())
+
+	for _, toolsJSON := range []string{`["missing"]`, `["list_tools"]`} {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/chat", bytes.NewBufferString(`{"session_id":"session-1","message":"hello","options":{"tools":`+toolsJSON+`}}`))
+		req.Header.Set("Content-Type", "application/json")
+		context, _ := gin.CreateTestContext(recorder)
+		context.Request = req
+		handler.Chat(context)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("tools=%s status=%d body=%s", toolsJSON, recorder.Code, recorder.Body.String())
+		}
+	}
+	if sessions.getCalls != 0 {
+		t.Fatalf("invalid tools reached session lookup: %d", sessions.getCalls)
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat", bytes.NewBufferString(`{"session_id":"session-1","message":"hello","options":{"tools":[]}}`))
+	req.Header.Set("Content-Type", "application/json")
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = req
+	handler.Chat(context)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("empty allowlist status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(contexts.input.Tools) != 1 || contexts.input.Tools[0].Function.Name != tool.ListToolsName {
+		t.Fatalf("empty allowlist initial tools=%+v", contexts.input.Tools)
 	}
 }
 func (*sessionManagerStub) GetUser(context.Context, string) (*model.UserInfo, error) { return nil, nil }

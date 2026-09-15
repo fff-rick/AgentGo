@@ -27,6 +27,7 @@ type Config struct {
 	Search    SearchConfig    `mapstructure:"search"`
 	Memory    MemoryConfig    `mapstructure:"memory"`
 	Context   ContextConfig   `mapstructure:"context"`
+	Tools     ToolConfig      `mapstructure:"tools"`
 	Log       LogConfig       `mapstructure:"log"`
 }
 
@@ -126,6 +127,11 @@ type ContextConfig struct {
 	MaxInputTokens   int `mapstructure:"max_input_tokens"`
 	RecentMessages   int `mapstructure:"recent_messages"`
 	SummaryMaxTokens int `mapstructure:"summary_max_tokens"`
+}
+
+type ToolConfig struct {
+	LazyLoadThreshold int `mapstructure:"lazy_load_threshold"`
+	MaxDiscoveryCalls int `mapstructure:"max_discovery_calls"`
 }
 
 // RAGConfig 检索增强生成配置
@@ -303,6 +309,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("context.max_input_tokens", 30000)
 	v.SetDefault("context.recent_messages", 20)
 	v.SetDefault("context.summary_max_tokens", 2000)
+	v.SetDefault("tools.lazy_load_threshold", 3)
+	v.SetDefault("tools.max_discovery_calls", 4)
 
 	// RAG 默认配置
 	v.SetDefault("rag.top_k", 5)

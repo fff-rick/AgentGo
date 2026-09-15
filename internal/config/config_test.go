@@ -56,4 +56,7 @@ func TestLoadMultiModelRoutingConfig(t *testing.T) {
 	if cfg.Memory.SessionTTL != 720*time.Hour || cfg.Memory.SemanticCollection != "semantic_memory_v1" || cfg.Context.MaxInputTokens != 30000 || cfg.Context.RecentMessages != 20 {
 		t.Fatalf("unexpected memory/context config: memory=%+v context=%+v", cfg.Memory, cfg.Context)
 	}
+	if cfg.Tools.LazyLoadThreshold != 3 || cfg.Tools.MaxDiscoveryCalls != 4 {
+		t.Fatalf("unexpected tool config: %+v", cfg.Tools)
+	}
 }

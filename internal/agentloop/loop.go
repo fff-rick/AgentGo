@@ -21,14 +21,16 @@ type AgentLoop interface {
 }
 
 type Input struct {
-	Messages      []model.LLMMessage
-	Tools         []model.ToolDef
-	MaxIterations int
-	RequiredTools []string
-	SystemPrompt  string
-	Model         string
-	RequireTool   bool
-	State         *RunState
+	Messages          []model.LLMMessage
+	Tools             []model.ToolDef
+	MaxIterations     int
+	MaxDiscoveryCalls int
+	RequiredTools     []string
+	SystemPrompt      string
+	Model             string
+	RequireTool       bool
+	State             *RunState
+	ToolScope         tool.Scope
 }
 
 // RunState is ephemeral working memory for one Agent run.
@@ -73,20 +75,27 @@ func (l *Loop) Run(ctx context.Context, input Input) (*Result, error) {
 
 	result := &Result{}
 	forcedIndex := 0
-	for iteration := 0; iteration < input.MaxIterations; iteration++ {
-		observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "agent_loop", Message: fmt.Sprintf("Agent 决策第 %d/%d 轮", iteration+1, input.MaxIterations)})
-		req := &model.LLMRequest{Model: input.Model, Messages: messages, Tools: input.Tools, ToolChoice: "auto", Temperature: 0.3}
+	maxDiscoveryCalls := input.MaxDiscoveryCalls
+	if maxDiscoveryCalls <= 0 {
+		maxDiscoveryCalls = 4
+	}
+	activeTools := append([]model.ToolDef(nil), input.Tools...)
+	businessIterations, discoveryCalls, decisionCalls := 0, 0, 0
+	for businessIterations < input.MaxIterations && decisionCalls < input.MaxIterations+maxDiscoveryCalls {
+		decisionCalls++
+		observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "agent_loop", Message: fmt.Sprintf("Agent 工具轮次 %d/%d，发现调用 %d/%d", businessIterations+1, input.MaxIterations, discoveryCalls, maxDiscoveryCalls)})
+		req := &model.LLMRequest{Model: input.Model, Messages: messages, Tools: activeTools, ToolChoice: "auto", Temperature: 0.3}
 		forcedTool := ""
 		if forcedIndex < len(forcedTools) {
 			forcedTool = forcedTools[forcedIndex]
 			req.RequiredTool = forcedTool
-		} else if input.RequireTool && len(result.ToolCalls) == 0 && len(input.Tools) > 0 {
+		} else if input.RequireTool && businessIterations == 0 && len(activeTools) > 0 {
 			req.ToolChoice = "required"
 		}
 
 		resp, err := l.chatStream(ctx, req)
 		if err != nil {
-			return nil, fmt.Errorf("Agent Loop 第 %d 轮失败: %w", iteration+1, err)
+			return nil, fmt.Errorf("Agent Loop 第 %d 次决策失败: %w", decisionCalls, err)
 		}
 		if len(resp.ToolCalls) == 0 {
 			if forcedTool != "" {
@@ -97,7 +106,7 @@ func (l *Loop) Run(ctx context.Context, input Input) (*Result, error) {
 				return nil, fmt.Errorf("模型未返回工具调用或最终答案")
 			}
 			result.Answer = answer
-			result.Steps = append(result.Steps, model.AgentStep{StepIndex: iteration + 1, Type: "answer", Content: answer, Timestamp: time.Now()})
+			result.Steps = append(result.Steps, model.AgentStep{StepIndex: businessIterations + 1, Type: "answer", Content: answer, Timestamp: time.Now()})
 			syncState(input.State, result.Steps)
 			return result, nil
 		}
@@ -110,33 +119,53 @@ func (l *Loop) Run(ctx context.Context, input Input) (*Result, error) {
 
 		messages = append(messages, model.LLMMessage{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls})
 		calls := make([]tool.ToolCall, len(resp.ToolCalls))
+		hasBusinessCall := false
 		for i, call := range resp.ToolCalls {
 			calls[i] = tool.ToolCall{Name: call.Function.Name, Input: call.Function.Arguments}
+			if call.Function.Name != tool.ListToolsName {
+				hasBusinessCall = true
+			}
 			observe.Emit(ctx, observe.Event{Type: observe.TypeToolCall, Stage: "tool", Tool: &model.ToolCallInfo{ToolName: call.Function.Name, Input: call.Function.Arguments}})
 		}
-		for i, execution := range l.executor.BatchExecute(ctx, calls) {
+		remainingDiscovery := maxDiscoveryCalls - discoveryCalls
+		executions, acceptedDiscovery := l.executeCalls(ctx, input.ToolScope, calls, remainingDiscovery)
+		discoveryCalls += acceptedDiscovery
+		var replacement []model.ToolDef
+		for i, execution := range executions {
 			call := resp.ToolCalls[i]
 			callInfo, toolMessage := toolExecutionResult(call, execution)
 			result.ToolCalls = append(result.ToolCalls, callInfo)
 			if execution != nil && execution.Result != nil {
 				result.References = append(result.References, execution.Result.References...)
+				if execution.Result.ToolDefinitions != nil {
+					replacement = execution.Result.ToolDefinitions
+				}
 				if input.State != nil {
 					input.State.ToolResults = append(input.State.ToolResults, *execution.Result)
 				}
 			}
 			result.Steps = append(result.Steps, model.AgentStep{
-				StepIndex: iteration + 1, Type: "action", ToolName: call.Function.Name,
+				StepIndex: businessIterations + 1, Type: "action", ToolName: call.Function.Name,
 				ToolInput: call.Function.Arguments, ToolOutput: callInfo.Output, Timestamp: time.Now(),
 			})
 			syncState(input.State, result.Steps)
 			observe.Emit(ctx, observe.Event{Type: observe.TypeToolResult, Stage: "tool", Message: callInfo.Output, Tool: &callInfo})
 			messages = append(messages, model.LLMMessage{Role: "tool", ToolCallID: call.ID, Content: toolMessage})
 		}
+		if replacement != nil {
+			activeTools = replaceBusinessTools(activeTools, replacement)
+		}
+		if discoveryCalls >= maxDiscoveryCalls {
+			activeTools = removeToolDefinition(activeTools, tool.ListToolsName)
+		}
+		if hasBusinessCall {
+			businessIterations++
+		}
 	}
 
 	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "agent_loop", Message: "工具调用达到上限，正在生成最终答案"})
 	messages = append(messages, model.LLMMessage{Role: "system", Content: "工具调用轮次已结束。禁止继续调用工具；请仅根据已有可信信息直接给出最终答案。"})
-	resp, err := l.chatStream(ctx, &model.LLMRequest{Model: input.Model, Messages: messages, Tools: input.Tools, ToolChoice: "none"})
+	resp, err := l.chatStream(ctx, &model.LLMRequest{Model: input.Model, Messages: messages, ToolChoice: "none"})
 	if err != nil {
 		return nil, fmt.Errorf("生成最终答案失败: %w", err)
 	}
@@ -144,9 +173,52 @@ func (l *Loop) Run(ctx context.Context, input Input) (*Result, error) {
 	if result.Answer == "" {
 		result.Answer = "抱歉，已达到工具调用上限，无法生成有效答案。"
 	}
-	result.Steps = append(result.Steps, model.AgentStep{StepIndex: input.MaxIterations + 1, Type: "answer", Content: result.Answer, Timestamp: time.Now()})
+	result.Steps = append(result.Steps, model.AgentStep{StepIndex: businessIterations + 1, Type: "answer", Content: result.Answer, Timestamp: time.Now()})
 	syncState(input.State, result.Steps)
 	return result, nil
+}
+
+func (l *Loop) executeCalls(ctx context.Context, scope tool.Scope, calls []tool.ToolCall, remainingDiscovery int) ([]*tool.ToolCallResult, int) {
+	results := make([]*tool.ToolCallResult, len(calls))
+	executable := make([]tool.ToolCall, 0, len(calls))
+	indices := make([]int, 0, len(calls))
+	acceptedDiscovery := 0
+	for index, call := range calls {
+		if call.Name == tool.ListToolsName {
+			if acceptedDiscovery >= remainingDiscovery {
+				results[index] = &tool.ToolCallResult{ToolName: call.Name, Err: fmt.Errorf("工具发现调用已达到上限")}
+				continue
+			}
+			acceptedDiscovery++
+		}
+		executable = append(executable, call)
+		indices = append(indices, index)
+	}
+	for index, execution := range l.executor.BatchExecuteScoped(ctx, scope, executable) {
+		results[indices[index]] = execution
+	}
+	return results, acceptedDiscovery
+}
+
+func replaceBusinessTools(current, replacement []model.ToolDef) []model.ToolDef {
+	result := make([]model.ToolDef, 0, len(replacement)+1)
+	for _, definition := range current {
+		if definition.Function.Name == tool.ListToolsName {
+			result = append(result, definition)
+			break
+		}
+	}
+	return append(result, replacement...)
+}
+
+func removeToolDefinition(definitions []model.ToolDef, name string) []model.ToolDef {
+	result := make([]model.ToolDef, 0, len(definitions))
+	for _, definition := range definitions {
+		if definition.Function.Name != name {
+			result = append(result, definition)
+		}
+	}
+	return result
 }
 
 func syncState(state *RunState, steps []model.AgentStep) {

@@ -12,6 +12,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/agentloop"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/tool"
 )
 
 type sessionsStub struct{ saved []model.Message }
@@ -71,7 +72,7 @@ func TestHarnessDoesNotFailAnswerWhenMemoryExtractionFails(t *testing.T) {
 	loop := &loopStub{}
 	extractor := &extractorStub{calls: make(chan extractionCall, 1), err: errors.New("embedding unavailable")}
 	contexts := contextStub{result: &agentcontext.AgentContext{Messages: []model.LLMMessage{{Role: "user", Content: "current"}}}}
-	result, err := New(loop, nil, contexts, sessions, extractor, toolsStub{}, nil, 2, time.Second, zap.NewNop()).Run(context.Background(), &RunRequest{Session: &model.Session{ID: "session", UserID: "user"}, Message: "current"})
+	result, err := New(loop, nil, contexts, sessions, extractor, toolsStub{}, nil, 2, 4, time.Second, zap.NewNop()).Run(context.Background(), &RunRequest{Session: &model.Session{ID: "session", UserID: "user"}, Message: "current"})
 	if err != nil || result.Answer != "draft" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -95,14 +96,17 @@ type plannerStub struct {
 	history []model.LLMMessage
 }
 
-func (p *plannerStub) Execute(_ context.Context, task string, history []model.LLMMessage) (*agentloop.Result, error) {
+func (p *plannerStub) Execute(_ context.Context, task string, history []model.LLMMessage, _ tool.Scope) (*agentloop.Result, error) {
 	p.calls, p.task, p.history = p.calls+1, task, history
 	return &agentloop.Result{Answer: "planned", Steps: []model.AgentStep{{Type: "action"}}}, nil
 }
 
 type toolsStub struct{ definitions []model.ToolDef }
 
-func (t toolsStub) ListToolDefinitions() []model.ToolDef { return t.definitions }
+func (t toolsStub) InitialToolDefinitions(context.Context, tool.Scope) []model.ToolDef {
+	return t.definitions
+}
+func (toolsStub) ValidateAllowedTools([]string) error { return nil }
 
 type hookStub struct{}
 
@@ -119,7 +123,7 @@ func TestHarnessOwnsRunLifecycle(t *testing.T) {
 	contexts := contextStub{result: &agentcontext.AgentContext{
 		SystemPrompt: "system", Messages: []model.LLMMessage{{Role: "user", Content: "previous"}, {Role: "user", Content: "current"}}, Tools: tools.definitions,
 	}}
-	result, err := New(loop, nil, contexts, sessions, extractor, tools, []Hook{hookStub{}}, 5, time.Second, zap.NewNop()).Run(
+	result, err := New(loop, nil, contexts, sessions, extractor, tools, []Hook{hookStub{}}, 5, 4, time.Second, zap.NewNop()).Run(
 		context.Background(), &RunRequest{Session: &model.Session{ID: "session", UserID: "user"}, Message: "current"},
 	)
 	if err != nil {
@@ -147,7 +151,7 @@ func TestHarnessOwnsRunLifecycle(t *testing.T) {
 func TestHarnessDoesNotWaitForMemoryExtraction(t *testing.T) {
 	release := make(chan struct{})
 	extractor := &extractorStub{calls: make(chan extractionCall, 1), release: release}
-	h := New(&loopStub{}, nil, contextStub{result: &agentcontext.AgentContext{}}, &sessionsStub{}, extractor, toolsStub{}, nil, 2, time.Second, zap.NewNop())
+	h := New(&loopStub{}, nil, contextStub{result: &agentcontext.AgentContext{}}, &sessionsStub{}, extractor, toolsStub{}, nil, 2, 4, time.Second, zap.NewNop())
 	done := make(chan error, 1)
 	go func() {
 		_, err := h.Run(context.Background(), &RunRequest{Session: &model.Session{ID: "session", UserID: "user"}, Message: "current"})
@@ -172,7 +176,7 @@ func TestHarnessUsesPlannerOnlyWhenExplicitlyRequested(t *testing.T) {
 	contexts := contextStub{result: &agentcontext.AgentContext{
 		SystemPrompt: "memory context", Messages: []model.LLMMessage{{Role: "assistant", Content: "previous"}, {Role: "user", Content: "complex task"}},
 	}}
-	result, err := New(loop, planner, contexts, sessions, nil, toolsStub{}, nil, 3, time.Second, zap.NewNop()).Run(
+	result, err := New(loop, planner, contexts, sessions, nil, toolsStub{}, nil, 3, 4, time.Second, zap.NewNop()).Run(
 		context.Background(), &RunRequest{Session: &model.Session{ID: "session", UserID: "user"}, Message: "complex task", Mode: model.ExecutionModePlanner},
 	)
 	if err != nil {

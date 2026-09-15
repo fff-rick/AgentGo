@@ -118,7 +118,8 @@ func main() {
 	// 工具系统
 	toolRegistry := tool.NewRegistry()
 	registerBuiltinTools(toolRegistry, cfg.Search, cfg.Postgres, postgresClient, logger)
-	toolRouter := tool.NewRouter(toolRegistry, logger)
+	toolManager := tool.NewManager(toolRegistry, redisCache, cfg.Tools.LazyLoadThreshold, cfg.Memory.SessionTTL, logger)
+	toolRouter := tool.NewRouter(toolRegistry, logger, toolManager)
 
 	// 知识检索作为普通工具加入统一 Agent Loop
 	retriever := rag.NewRetriever(milvusClient, embeddingClient, redisCache, cfg.RAG.ScoreThreshold, logger, postgresClient)
@@ -133,7 +134,7 @@ func main() {
 	}
 	loop := agentloop.New(modelRouter, toolRouter)
 	planner := agent.NewPlannerAgent(modelRouter, toolRouter, logger)
-	agentHarness := harness.New(loop, planner, contextBuilder, sessionManager, memoryExtractor, toolRouter, hooks, cfg.Agent.MaxIterations, cfg.Agent.DefaultTimeout, logger)
+	agentHarness := harness.New(loop, planner, contextBuilder, sessionManager, memoryExtractor, toolRouter, hooks, cfg.Agent.MaxIterations, cfg.Tools.MaxDiscoveryCalls, cfg.Agent.DefaultTimeout, logger)
 	orchestrator := agent.NewOrchestrator(agentHarness)
 
 	// ======================== 6. 初始化 HTTP 处理器 ========================
