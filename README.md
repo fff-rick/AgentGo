@@ -174,7 +174,9 @@ APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 | `APP_CONTEXT_MAX_INPUT_TOKENS` | `30000` | 触发会话压缩的估算输入预算 |
 | `APP_CONTEXT_RECENT_MESSAGES` | `20` | 压缩后优先保留的最近消息数 |
 
-文档上传会按内容生成稳定的文档和分块 ID，经过分块、Ollama 批量向量化后 Upsert 到 Milvus，同时通过纯 Go 中文分词写入 PostgreSQL 倒排词频索引并使用 BM25 排序；重复导入相同内容不会新增重复向量。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。验证 Milvus 数据链路：
+文档上传会按规范化后的内容类型和标题生成稳定文档 ID，并按原始内容生成 ContentHash；同一文档内容未变化时跳过处理，内容变化时覆盖 PostgreSQL 索引和 Milvus 向量并清理多余旧分块。分块经 Ollama 批量向量化后 Upsert 到 Milvus，同时通过纯 Go 中文分词写入 PostgreSQL 倒排词频索引并使用 BM25 排序。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。
+
+从旧版“按内容生成文档 ID”升级时，需要先清空 PostgreSQL 文档索引和配置的 Milvus 文档 collection，再重新导入知识库；服务不会自动删除存量知识。验证 Milvus 数据链路：
 
 ```bash
 make test-milvus

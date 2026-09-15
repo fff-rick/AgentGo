@@ -48,7 +48,8 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.mode 只支持 agent 或 planner")
 		return
 	}
-	if _, err := h.sessions.GetSession(c.Request.Context(), req.SessionID); err != nil {
+	session, err := h.sessions.GetSession(c.Request.Context(), req.SessionID)
+	if err != nil {
 		h.writeChatError(c, err)
 		return
 	}
@@ -60,7 +61,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	resp, err := h.orchestrator.ProcessMessage(ctx, &req)
+	resp, err := h.orchestrator.ProcessMessage(ctx, &req, session)
 	if err != nil {
 		h.logger.Error("对话处理失败", zap.Error(err))
 		h.writeChatError(c, err)
@@ -83,7 +84,8 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.mode 只支持 agent 或 planner")
 		return
 	}
-	if _, err := h.sessions.GetSession(c.Request.Context(), req.SessionID); err != nil {
+	session, err := h.sessions.GetSession(c.Request.Context(), req.SessionID)
+	if err != nil {
 		h.writeChatError(c, err)
 		return
 	}
@@ -113,7 +115,7 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 		h.writeSSE(c.Writer, event.Type, event)
 		flusher.Flush()
 	})
-	resp, err := h.orchestrator.ProcessMessage(ctx, &req)
+	resp, err := h.orchestrator.ProcessMessage(ctx, &req, session)
 	if err != nil {
 		h.writeSSE(c.Writer, "error", map[string]string{"error": err.Error()})
 		flusher.Flush()

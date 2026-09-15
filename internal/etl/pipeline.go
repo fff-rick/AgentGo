@@ -3,8 +3,12 @@ package etl
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -23,32 +27,56 @@ type Pipeline struct {
 	embedder embedding.Client
 	indexer  DocumentIndexer
 	logger   *zap.Logger
+	mu       sync.Mutex
 }
 
 // DocumentIndexer persists chunks for PostgreSQL keyword search.
 type DocumentIndexer interface {
+	FindDocument(ctx context.Context, id string) (*model.DocumentResponse, error)
 	IndexDocument(ctx context.Context, doc *model.Document, chunks []model.DocumentChunk) error
 }
 
 // NewPipeline 创建 ETL 流水线
-func NewPipeline(parser Parser, chunker *Chunker, vectorDB vectordb.VectorDB, embedder embedding.Client, logger *zap.Logger, indexers ...DocumentIndexer) *Pipeline {
-	p := &Pipeline{
+func NewPipeline(parser Parser, chunker *Chunker, vectorDB vectordb.VectorDB, embedder embedding.Client, logger *zap.Logger, indexer DocumentIndexer) *Pipeline {
+	return &Pipeline{
 		parser:   parser,
 		chunker:  chunker,
 		vectorDB: vectorDB,
 		embedder: embedder,
 		logger:   logger,
+		indexer:  indexer,
 	}
-	if len(indexers) > 0 {
-		p.indexer = indexers[0]
-	}
-	return p
 }
 
 // ProcessDocument 处理单个文档：解析 → 分块 → 向量化 → 入库
 func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*model.DocumentResponse, error) {
+	// ponytail: a global lock is sufficient for the current single-instance importer;
+	// use per-document/distributed locks when concurrent import throughput requires it.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	startTime := time.Now()
-	doc.ID = DocumentID(doc.ContentType, doc.Content)
+	if p.indexer == nil {
+		return nil, fmt.Errorf("文档索引存储未配置")
+	}
+	doc.Title = strings.TrimSpace(doc.Title)
+	if doc.Title == "" {
+		return nil, fmt.Errorf("文档标题不能为空")
+	}
+	doc.ContentType = normalizeContentType(doc.ContentType)
+	doc.ID = DocumentID(doc.ContentType, doc.Title)
+	doc.ContentHash = ContentHash(doc.Content)
+
+	existing, err := p.indexer.FindDocument(ctx, doc.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("查询现有文档失败: %w", err)
+	}
+	if err == nil {
+		if existing.ContentHash == doc.ContentHash {
+			return existing, nil
+		}
+		doc.CreatedAt = existing.CreatedAt
+	}
 	p.logger.Info("开始处理文档",
 		zap.String("doc_id", doc.ID),
 		zap.String("title", doc.Title),
@@ -102,15 +130,23 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 		})
 	}
 
-	if p.indexer != nil {
-		if err := p.indexer.IndexDocument(ctx, doc, keywordChunks); err != nil {
-			p.logger.Error("关键词索引入库失败", zap.Error(err))
-			return nil, fmt.Errorf("关键词索引入库失败: %w", err)
-		}
-	}
 	if err := p.vectorDB.Insert(ctx, "", records); err != nil {
 		p.logger.Error("向量入库失败，可重复导入修复", zap.Error(err))
 		return nil, fmt.Errorf("向量入库失败: %w", err)
+	}
+	if existing != nil && existing.ChunkCount > len(records) {
+		staleIDs := make([]string, 0, existing.ChunkCount-len(records))
+		for i := len(records); i < existing.ChunkCount; i++ {
+			staleIDs = append(staleIDs, stableChunkID(doc.ID, i))
+		}
+		if err := p.vectorDB.Delete(ctx, "", staleIDs); err != nil {
+			p.logger.Error("清理旧向量失败，可重复导入修复", zap.Error(err))
+			return nil, fmt.Errorf("清理旧向量失败: %w", err)
+		}
+	}
+	if err := p.indexer.IndexDocument(ctx, doc, keywordChunks); err != nil {
+		p.logger.Error("关键词索引入库失败，可重复导入修复", zap.Error(err))
+		return nil, fmt.Errorf("关键词索引入库失败: %w", err)
 	}
 
 	elapsed := time.Since(startTime)
@@ -121,18 +157,33 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 	)
 
 	return &model.DocumentResponse{
-		DocID:      doc.ID,
-		Title:      doc.Title,
-		Status:     "completed",
-		ChunkCount: len(parsedChunks),
-		CreatedAt:  time.Now(),
+		DocID:       doc.ID,
+		Title:       doc.Title,
+		Status:      "completed",
+		ChunkCount:  len(parsedChunks),
+		CreatedAt:   doc.CreatedAt,
+		ContentHash: doc.ContentHash,
 	}, nil
 }
 
-// DocumentID makes importing identical content idempotent across all entry points.
-func DocumentID(contentType, content string) string {
-	sum := sha256.Sum256([]byte(contentType + "\x00" + content))
+// DocumentID identifies one logical document by normalized type and trimmed title.
+func DocumentID(contentType, title string) string {
+	sum := sha256.Sum256([]byte(normalizeContentType(contentType) + "\x00" + strings.TrimSpace(title)))
 	return fmt.Sprintf("doc-%x", sum)
+}
+
+// ContentHash identifies the exact raw content version of a document.
+func ContentHash(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return fmt.Sprintf("%x", sum)
+}
+
+func normalizeContentType(contentType string) string {
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	if contentType == "" {
+		return string(DocTypeText)
+	}
+	return contentType
 }
 
 func stableChunkID(docID string, index int) string {

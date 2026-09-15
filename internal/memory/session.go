@@ -28,10 +28,10 @@ type SessionManager interface {
 	CreateSession(context.Context, model.UserInfo) (*model.Session, error)
 	GetSession(context.Context, string) (*model.Session, error)
 	GetUser(context.Context, string) (*model.UserInfo, error)
-	AppendMessage(context.Context, string, model.Message) error
-	GetMessages(context.Context, string) ([]model.Message, error)
-	GetRecentMessages(context.Context, string, int) ([]model.Message, error)
-	SaveSummary(context.Context, string, SessionSummary) error
+	AppendMessage(context.Context, *model.Session, model.Message) error
+	GetMessages(context.Context, *model.Session) ([]model.Message, error)
+	GetRecentMessages(context.Context, *model.Session, int) ([]model.Message, error)
+	SaveSummary(context.Context, *model.Session, SessionSummary) error
 	GetSummary(context.Context, string) (*SessionSummary, error)
 }
 
@@ -86,8 +86,9 @@ func (m *RedisSessionManager) GetUser(ctx context.Context, userID string) (*mode
 	return m.users.Get(ctx, userID)
 }
 
-func (m *RedisSessionManager) AppendMessage(ctx context.Context, sessionID string, message model.Message) error {
-	if _, err := m.GetSession(ctx, sessionID); err != nil {
+func (m *RedisSessionManager) AppendMessage(ctx context.Context, session *model.Session, message model.Message) error {
+	sessionID, err := validSessionID(session)
+	if err != nil {
 		return err
 	}
 	sequence, err := m.cache.Incr(ctx, m.sequenceKey(sessionID))
@@ -114,19 +115,21 @@ func (m *RedisSessionManager) AppendMessage(ctx context.Context, sessionID strin
 	return m.cache.Expire(ctx, m.sequenceKey(sessionID), m.ttl)
 }
 
-func (m *RedisSessionManager) GetMessages(ctx context.Context, sessionID string) ([]model.Message, error) {
-	return m.loadMessages(ctx, sessionID, -1)
+func (m *RedisSessionManager) GetMessages(ctx context.Context, session *model.Session) ([]model.Message, error) {
+	return m.loadMessages(ctx, session, -1)
 }
 
-func (m *RedisSessionManager) GetRecentMessages(ctx context.Context, sessionID string, limit int) ([]model.Message, error) {
+func (m *RedisSessionManager) GetRecentMessages(ctx context.Context, session *model.Session, limit int) ([]model.Message, error) {
 	if limit <= 0 {
-		return nil, nil
+		_, err := validSessionID(session)
+		return nil, err
 	}
-	return m.loadMessages(ctx, sessionID, int64(limit-1))
+	return m.loadMessages(ctx, session, int64(limit-1))
 }
 
-func (m *RedisSessionManager) SaveSummary(ctx context.Context, sessionID string, summary SessionSummary) error {
-	if _, err := m.GetSession(ctx, sessionID); err != nil {
+func (m *RedisSessionManager) SaveSummary(ctx context.Context, session *model.Session, summary SessionSummary) error {
+	sessionID, err := validSessionID(session)
+	if err != nil {
 		return err
 	}
 	if summary.UpdatedAt.IsZero() {
@@ -151,8 +154,9 @@ func (m *RedisSessionManager) GetSummary(ctx context.Context, sessionID string) 
 	return &summary, nil
 }
 
-func (m *RedisSessionManager) loadMessages(ctx context.Context, sessionID string, stop int64) ([]model.Message, error) {
-	if _, err := m.GetSession(ctx, sessionID); err != nil {
+func (m *RedisSessionManager) loadMessages(ctx context.Context, session *model.Session, stop int64) ([]model.Message, error) {
+	sessionID, err := validSessionID(session)
+	if err != nil {
 		return nil, err
 	}
 	items, err := m.cache.LRange(ctx, m.messagesKey(sessionID), 0, stop)
@@ -168,6 +172,13 @@ func (m *RedisSessionManager) loadMessages(ctx context.Context, sessionID string
 		messages = append(messages, message)
 	}
 	return messages, nil
+}
+
+func validSessionID(session *model.Session) (string, error) {
+	if session == nil || session.ID == "" {
+		return "", ErrSessionNotFound
+	}
+	return session.ID, nil
 }
 
 func (m *RedisSessionManager) touch(ctx context.Context, session *model.Session) error {
