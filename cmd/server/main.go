@@ -19,6 +19,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/agent"
 	"github.com/enterprise/ai-agent-go/internal/agentcontext"
 	"github.com/enterprise/ai-agent-go/internal/agentloop"
+	"github.com/enterprise/ai-agent-go/internal/auth"
 	"github.com/enterprise/ai-agent-go/internal/cache"
 	"github.com/enterprise/ai-agent-go/internal/config"
 	"github.com/enterprise/ai-agent-go/internal/database"
@@ -56,6 +57,15 @@ func main() {
 		zap.String("version", version),
 		zap.String("build_time", buildTime),
 	)
+	var verifier *auth.Verifier
+	if cfg.Auth.Enabled {
+		verifier, err = auth.NewVerifier(context.Background(), cfg.Auth.Issuer, cfg.Auth.Audience)
+		if err != nil {
+			logger.Fatal("初始化 OIDC 验证器失败", zap.Error(err))
+		}
+	} else {
+		logger.Warn("OIDC 鉴权已关闭，所有请求共享本地用户；请勿将服务暴露到不可信网络")
+	}
 
 	// ======================== 3. 初始化基础设施 ========================
 	// Redis 缓存
@@ -110,10 +120,18 @@ func main() {
 	// 用户、会话与长期语义记忆
 	userManager := user.NewManager(redisCache, cfg.Memory.SessionTTL)
 	sessionManager := memory.NewSessionManager(redisCache, userManager, cfg.Memory.SessionTTL)
-	semanticMemory := memory.NewSemanticStore(milvusClient, embeddingClient, cfg.Memory.SemanticCollection)
+	vectorMemory := memory.NewSemanticStore(milvusClient, embeddingClient, cfg.Memory.SemanticCollection)
+	semanticMemory, err := memory.NewManagedStore(context.Background(), postgresClient.DB(), vectorMemory)
+	if err != nil {
+		logger.Fatal("初始化长期记忆失败", zap.Error(err))
+	}
 	memoryExtractor := memory.NewExtractor(modelRouter, semanticMemory, cfg.Memory.ExtractionTimeout, cfg.Memory.ExtractionMinImportance, cfg.Memory.ExtractionMaxItems)
+	memoryExtractor.RequireEvidence()
+	memoryJobs := memory.NewJobRunner(semanticMemory, memoryExtractor, logger)
+	memoryJobs.Start()
 	compactor := agentcontext.NewCompactor(modelRouter)
 	contextBuilder := agentcontext.NewBuilder(sessionManager, semanticMemory, compactor, cfg.Context, cfg.Memory.SemanticTopK, logger)
+	precompactor := agentcontext.NewPrecompactor(contextBuilder)
 
 	// 工具系统
 	toolRegistry := tool.NewRegistry()
@@ -135,11 +153,14 @@ func main() {
 	loop := agentloop.New(modelRouter, toolRouter)
 	planner := agent.NewPlannerAgent(modelRouter, toolRouter, logger)
 	agentHarness := harness.New(loop, planner, contextBuilder, sessionManager, memoryExtractor, toolRouter, hooks, cfg.Agent.MaxIterations, cfg.Tools.MaxDiscoveryCalls, cfg.Agent.DefaultTimeout, logger)
+	agentHarness.SetMemoryJobs(memoryJobs)
+	agentHarness.SetPrecompactor(precompactor)
 	orchestrator := agent.NewOrchestrator(agentHarness)
 
 	// ======================== 6. 初始化 HTTP 处理器 ========================
 	chatHandler := handler.NewChatHandler(orchestrator, sessionManager, logger)
 	sessionHandler := handler.NewSessionHandler(sessionManager)
+	memoryHandler := handler.NewMemoryHandler(semanticMemory)
 	documentParser := etl.NewDocumentParser(cfg.Document.DoclingURL, cfg.Document.ParseTimeout)
 	etlPipeline := etl.NewPipeline(documentParser, etl.NewChunker(cfg.RAG.ChunkSize, cfg.RAG.ChunkOverlap), milvusClient, embeddingClient, logger, postgresClient)
 	importer, err := etl.NewImporter(context.Background(), etlPipeline, postgresClient, logger)
@@ -155,7 +176,7 @@ func main() {
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 
-	router.Register(engine, chatHandler, sessionHandler, docHandler, healthHandler)
+	router.Register(engine, verifier, chatHandler, sessionHandler, memoryHandler, docHandler, healthHandler)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
@@ -184,6 +205,12 @@ func main() {
 
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("HTTP 服务器关停失败", zap.Error(err))
+	}
+	if err := precompactor.Close(ctx); err != nil {
+		logger.Warn("后台摘要任务关停超时", zap.Error(err))
+	}
+	if err := memoryJobs.Close(ctx); err != nil {
+		logger.Warn("长期记忆任务关停超时", zap.Error(err))
 	}
 
 	logger.Info("服务已安全退出")

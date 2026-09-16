@@ -39,17 +39,27 @@ type Hook interface {
 }
 
 type AgentHarness struct {
-	loop              agentloop.AgentLoop
-	planner           PlanningExecutor
-	contexts          agentcontext.Builder
-	sessions          memory.SessionManager
-	extractor         memory.MemoryExtractor
+	loop         agentloop.AgentLoop
+	planner      PlanningExecutor
+	contexts     agentcontext.Builder
+	precompactor *agentcontext.Precompactor
+	sessions     memory.SessionManager
+	extractor    memory.MemoryExtractor
+	memoryJobs   interface {
+		Enqueue(context.Context, string, string, string, string, time.Time) error
+	}
 	tools             ToolRegistry
 	hooks             []Hook
 	maxIterations     int
 	maxDiscoveryCalls int
 	timeout           time.Duration
 	logger            *zap.Logger
+}
+
+func (h *AgentHarness) SetMemoryJobs(jobs interface {
+	Enqueue(context.Context, string, string, string, string, time.Time) error
+}) {
+	h.memoryJobs = jobs
 }
 
 type RunRequest struct {
@@ -70,6 +80,10 @@ type RunResult struct {
 
 func New(loop agentloop.AgentLoop, planner PlanningExecutor, contexts agentcontext.Builder, sessions memory.SessionManager, extractor memory.MemoryExtractor, tools ToolRegistry, hooks []Hook, maxIterations, maxDiscoveryCalls int, timeout time.Duration, logger *zap.Logger) *AgentHarness {
 	return &AgentHarness{loop: loop, planner: planner, contexts: contexts, sessions: sessions, extractor: extractor, tools: tools, hooks: hooks, maxIterations: maxIterations, maxDiscoveryCalls: maxDiscoveryCalls, timeout: timeout, logger: logger}
+}
+
+func (h *AgentHarness) SetPrecompactor(precompactor *agentcontext.Precompactor) {
+	h.precompactor = precompactor
 }
 
 func (h *AgentHarness) ValidateAllowedTools(names []string) error {
@@ -127,13 +141,27 @@ func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (*RunResult, er
 			h.logger.Warn("Agent Hook 执行失败", zap.Error(err))
 		}
 	}
-	if err := h.sessions.AppendMessage(ctx, session, model.Message{Role: "user", Content: req.Message}); err != nil {
-		h.logger.Warn("保存用户消息失败", zap.Error(err))
+	userMessageID := uuid.NewString()
+	userMessageAt := time.Now().UTC()
+	userSaveErr := h.sessions.AppendMessage(ctx, session, model.Message{ID: userMessageID, Role: "user", Content: req.Message, CreatedAt: userMessageAt})
+	if userSaveErr != nil {
+		h.logger.Warn("保存用户消息失败", zap.Error(userSaveErr))
 	}
-	if err := h.sessions.AppendMessage(ctx, session, model.Message{Role: "assistant", Content: result.Answer}); err != nil {
-		h.logger.Warn("保存助手消息失败", zap.Error(err))
+	assistantSaveErr := h.sessions.AppendMessage(ctx, session, model.Message{Role: "assistant", Content: result.Answer})
+	if assistantSaveErr != nil {
+		h.logger.Warn("保存助手消息失败", zap.Error(assistantSaveErr))
 	}
-	if h.extractor != nil {
+	if userSaveErr == nil && assistantSaveErr == nil && h.precompactor != nil {
+		h.precompactor.Submit(session, agentContext.EstimatedTokens, agentContext.HistoryMessages, result.Answer)
+	}
+	if userSaveErr == nil && assistantSaveErr == nil && h.memoryJobs != nil {
+		enqueueCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err := h.memoryJobs.Enqueue(enqueueCtx, session.UserID, session.ID, userMessageID, req.Message, userMessageAt)
+		cancel()
+		if err != nil {
+			h.logger.Warn("提交记忆提取任务失败", zap.Error(err), zap.String("session_id", session.ID))
+		}
+	} else if h.extractor != nil && h.memoryJobs == nil && userSaveErr == nil && assistantSaveErr == nil {
 		// ponytail: best-effort goroutine; use a durable queue when extraction must survive process exit.
 		go func(userID, sessionID, question, answer string) {
 			if err := h.extractor.ExtractAndSave(context.Background(), userID, sessionID, question, answer); err != nil {

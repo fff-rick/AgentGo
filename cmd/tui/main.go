@@ -391,6 +391,9 @@ func stream(ctx context.Context, baseURL, session, query, mode string, events ch
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if token := os.Getenv("AGENTGO_ACCESS_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -443,6 +446,9 @@ func createSession(ctx context.Context, baseURL, userID string) (string, error) 
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if token := os.Getenv("AGENTGO_ACCESS_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err

@@ -7,11 +7,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/enterprise/ai-agent-go/internal/auth"
 	"github.com/enterprise/ai-agent-go/internal/handler"
 )
 
 // Register 注册所有 HTTP 路由和中间件
-func Register(engine *gin.Engine, chatH *handler.ChatHandler, sessionH *handler.SessionHandler, docH *handler.DocumentHandler, healthH *handler.HealthHandler) {
+func Register(engine *gin.Engine, verifier *auth.Verifier, chatH *handler.ChatHandler, sessionH *handler.SessionHandler, memoryH *handler.MemoryHandler, docH *handler.DocumentHandler, healthH *handler.HealthHandler) {
 	// 全局中间件
 	engine.Use(
 		requestIDMiddleware(),
@@ -26,9 +27,21 @@ func Register(engine *gin.Engine, chatH *handler.ChatHandler, sessionH *handler.
 	v1 := engine.Group("/api/v1")
 	{
 		// 对话接口
-		v1.POST("/chat", chatH.Chat)
-		v1.POST("/chat/stream", chatH.ChatStream)
-		v1.POST("/sessions", sessionH.Create)
+		protected := v1.Group("")
+		if verifier == nil {
+			protected.Use(auth.LocalMiddleware())
+		} else {
+			protected.Use(verifier.Middleware())
+		}
+		protected.POST("/chat", chatH.Chat)
+		protected.POST("/chat/stream", chatH.ChatStream)
+		protected.POST("/sessions", sessionH.Create)
+		protected.GET("/memories", memoryH.List)
+		protected.GET("/memories/:id", memoryH.Get)
+		protected.GET("/memories/:id/versions", memoryH.Versions)
+		protected.PUT("/memories/:id", memoryH.Correct)
+		protected.PATCH("/memories/:id/expiry", memoryH.SetExpiry)
+		protected.DELETE("/memories/:id", memoryH.Delete)
 
 		// 文档接口
 		v1.POST("/documents", docH.Upload)

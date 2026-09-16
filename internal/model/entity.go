@@ -11,7 +11,7 @@ type Session struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// UserInfo 是无认证阶段由客户端提供的用户上下文。
+// UserInfo 是会话展示上下文；UserID 由 OIDC 身份或本地模式的固定身份确定。
 type UserInfo struct {
 	UserID      string            `json:"user_id"`
 	DisplayName string            `json:"display_name,omitempty"`
@@ -48,6 +48,27 @@ type MemoryItem struct {
 	SourceSessionID string     `json:"source_session_id"`
 	CreatedAt       time.Time  `json:"created_at"`
 	Score           float64    `json:"score,omitempty"`
+	Topic           string     `json:"topic,omitempty"`
+	Version         int64      `json:"version,omitempty"`
+	Confidence      float64    `json:"confidence,omitempty"`
+	Status          string     `json:"status,omitempty"`
+	SourceMessageID string     `json:"source_message_id,omitempty"`
+	ValidFrom       time.Time  `json:"valid_from,omitempty"`
+	ValidTo         *time.Time `json:"valid_to,omitempty"`
+	UpdatedAt       time.Time  `json:"updated_at,omitempty"`
+	LastUsedAt      *time.Time `json:"last_used_at,omitempty"`
+	UseCount        int64      `json:"use_count,omitempty"`
+}
+
+type MemoryVersion struct {
+	Version         int64      `json:"version"`
+	Content         string     `json:"content"`
+	Status          string     `json:"status"`
+	SourceSessionID string     `json:"source_session_id,omitempty"`
+	SourceMessageID string     `json:"source_message_id,omitempty"`
+	SourceAt        time.Time  `json:"source_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	ValidTo         *time.Time `json:"valid_to,omitempty"`
 }
 
 // Document 文档实体

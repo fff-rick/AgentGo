@@ -102,3 +102,17 @@ func TestExtractorValidatesAndDeduplicatesCandidates(t *testing.T) {
 		t.Fatalf("稳定记忆 ID 不一致: %q != %q", semantic.saved[1].ID, firstID)
 	}
 }
+
+func TestExtractorRequiresLiteralUserEvidence(t *testing.T) {
+	client := extractionClient{response: `{"memories":[{"kind":"fact","topic":"theme","content":"用户喜欢深色主题","evidence":"助手说用户喜欢深色主题","importance":0.9,"confidence":0.9}]}`}
+	router := llm.NewRouter(map[string]llm.Client{"extractor": client}, []config.ModelConfig{{Name: "extractor"}}, config.CBConfig{FailureThreshold: 3, SuccessThreshold: 1})
+	semantic := &semanticStub{}
+	extractor := NewExtractor(router, semantic, 0, 0.7, 5)
+	extractor.RequireEvidence()
+	if err := extractor.ExtractAndSave(context.Background(), "user-1", "session", "请帮我查询天气", "助手说用户喜欢深色主题"); err != nil {
+		t.Fatal(err)
+	}
+	if len(semantic.saved) != 0 {
+		t.Fatalf("assistant claim was stored: %+v", semantic.saved)
+	}
+}

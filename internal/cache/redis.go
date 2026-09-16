@@ -16,6 +16,7 @@ import (
 type Cache interface {
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key string, value string, ttl time.Duration) error
+	CompareAndSet(ctx context.Context, key, expected, value string, ttl time.Duration) (bool, error)
 	Delete(ctx context.Context, key string) error
 	Exists(ctx context.Context, key string) (bool, error)
 	LPush(ctx context.Context, key string, values ...interface{}) error
@@ -31,6 +32,11 @@ type Cache interface {
 type RedisCache struct {
 	client *redis.Client
 }
+
+var compareAndSetScript = redis.NewScript(`
+if (redis.call('GET', KEYS[1]) or '') ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
+return 1`)
 
 // NewRedisCache 创建 Redis 缓存实例并测试连接
 func NewRedisCache(cfg config.RedisConfig) (*RedisCache, error) {
@@ -65,6 +71,11 @@ func (r *RedisCache) Get(ctx context.Context, key string) (string, error) {
 // Set 设置缓存值，ttl 为 0 表示永不过期
 func (r *RedisCache) Set(ctx context.Context, key string, value string, ttl time.Duration) error {
 	return r.client.Set(ctx, key, value, ttl).Err()
+}
+
+func (r *RedisCache) CompareAndSet(ctx context.Context, key, expected, value string, ttl time.Duration) (bool, error) {
+	result, err := compareAndSetScript.Run(ctx, r.client, []string{key}, expected, value, ttl.Milliseconds()).Int()
+	return result == 1, err
 }
 
 // Delete 删除缓存

@@ -54,6 +54,15 @@ func (c *managerCache) Set(_ context.Context, key, value string, ttl time.Durati
 	c.values[key], c.ttls[key] = value, ttl
 	return nil
 }
+func (c *managerCache) CompareAndSet(_ context.Context, key, expected, value string, ttl time.Duration) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.values[key] != expected {
+		return false, nil
+	}
+	c.values[key], c.ttls[key] = value, ttl
+	return true, nil
+}
 func (c *managerCache) Delete(context.Context, string) error                { return nil }
 func (c *managerCache) Exists(context.Context, string) (bool, error)        { return false, nil }
 func (c *managerCache) LPush(context.Context, string, ...interface{}) error { return nil }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/enterprise/ai-agent-go/internal/auth"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/user"
@@ -25,6 +26,11 @@ func (h *SessionHandler) Create(c *gin.Context) {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "请求参数错误: "+err.Error())
 		return
 	}
+	if auth.Identity(c) == "" {
+		common.FailWithCode(c, http.StatusUnauthorized, common.ErrCodeInvalidParam, "未认证")
+		return
+	}
+	req.User.UserID = auth.Identity(c)
 	if err := user.Validate(req.User); err != nil {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, err.Error())
 		return

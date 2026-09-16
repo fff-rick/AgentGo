@@ -14,6 +14,7 @@ import (
 
 	"github.com/enterprise/ai-agent-go/internal/agent"
 	"github.com/enterprise/ai-agent-go/internal/agentcontext"
+	"github.com/enterprise/ai-agent-go/internal/auth"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/observe"
@@ -59,6 +60,10 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		h.writeChatError(c, err)
 		return
 	}
+	if auth.Identity(c) == "" || session.UserID != auth.Identity(c) {
+		common.FailWithCode(c, http.StatusNotFound, common.ErrCodeNotFound, memory.ErrSessionNotFound.Error())
+		return
+	}
 
 	h.logger.Info("收到对话请求",
 		zap.String("session_id", req.SessionID),
@@ -99,6 +104,10 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 	session, err := h.sessions.GetSession(c.Request.Context(), req.SessionID)
 	if err != nil {
 		h.writeChatError(c, err)
+		return
+	}
+	if auth.Identity(c) == "" || session.UserID != auth.Identity(c) {
+		common.FailWithCode(c, http.StatusNotFound, common.ErrCodeNotFound, memory.ErrSessionNotFound.Error())
 		return
 	}
 
