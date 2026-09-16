@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/enterprise/ai-agent-go/internal/agentcontext"
 	"github.com/enterprise/ai-agent-go/internal/agentloop"
+	"github.com/enterprise/ai-agent-go/internal/config"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/tool"
@@ -34,8 +36,8 @@ func (*sessionsStub) GetMessages(context.Context, *model.Session) ([]model.Messa
 func (*sessionsStub) GetRecentMessages(context.Context, *model.Session, int) ([]model.Message, error) {
 	return nil, nil
 }
-func (*sessionsStub) SaveSummary(context.Context, *model.Session, memory.SessionSummary) error {
-	return nil
+func (*sessionsStub) SaveSummary(context.Context, *model.Session, *memory.SessionSummary, memory.SessionSummary) (bool, error) {
+	return true, nil
 }
 func (*sessionsStub) GetSummary(context.Context, string) (*memory.SessionSummary, error) {
 	return nil, nil
@@ -167,6 +169,99 @@ func TestHarnessDoesNotWaitForMemoryExtraction(t *testing.T) {
 		t.Fatal("Run waited for memory extraction")
 	}
 	close(release)
+}
+
+type precompactHarnessSessions struct {
+	*sessionsStub
+	failRole string
+	loads    atomic.Int32
+}
+
+func (s *precompactHarnessSessions) AppendMessage(ctx context.Context, session *model.Session, message model.Message) error {
+	if message.Role == s.failRole {
+		return errors.New("save failed")
+	}
+	return s.sessionsStub.AppendMessage(ctx, session, message)
+}
+
+func (s *precompactHarnessSessions) GetMessages(context.Context, *model.Session) ([]model.Message, error) {
+	s.loads.Add(1)
+	messages := make([]model.Message, 25)
+	for i := range messages {
+		messages[i] = model.Message{Sequence: int64(i + 1), Role: "user", Content: "old"}
+	}
+	return messages, nil
+}
+
+type precompactHarnessCompactor struct {
+	started chan struct{}
+	release <-chan struct{}
+}
+
+func (*precompactHarnessCompactor) ShouldCompact(agentcontext.ContextBudgetInput) bool { return false }
+func (c *precompactHarnessCompactor) Compact(ctx context.Context, _ agentcontext.CompactionInput) (*agentcontext.CompactionResult, error) {
+	close(c.started)
+	select {
+	case <-c.release:
+		return &agentcontext.CompactionResult{Summary: "summary"}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestHarnessPrecompactionDoesNotBlockResponse(t *testing.T) {
+	sessions := &precompactHarnessSessions{sessionsStub: &sessionsStub{}}
+	release := make(chan struct{})
+	compactor := &precompactHarnessCompactor{started: make(chan struct{}), release: release}
+	builder := agentcontext.NewBuilder(sessions, nil, compactor, config.ContextConfig{MaxInputTokens: 100, RecentMessages: 20}, 5, zap.NewNop())
+	precompactor := agentcontext.NewPrecompactor(builder)
+	h := New(&loopStub{}, nil, contextStub{result: &agentcontext.AgentContext{EstimatedTokens: 70, HistoryMessages: 25}}, sessions, nil, toolsStub{}, nil, 2, 4, time.Second, zap.NewNop())
+	h.SetPrecompactor(precompactor)
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.Run(context.Background(), &RunRequest{Session: &model.Session{ID: "session", UserID: "user"}, Message: "current"})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("response waited for summary compaction")
+	}
+	select {
+	case <-compactor.started:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("summary compaction was not started")
+	}
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := precompactor.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHarnessSkipsPrecompactionWhenEitherMessageSaveFails(t *testing.T) {
+	for _, failedRole := range []string{"user", "assistant"} {
+		sessions := &precompactHarnessSessions{sessionsStub: &sessionsStub{}, failRole: failedRole}
+		builder := agentcontext.NewBuilder(sessions, nil, nil, config.ContextConfig{MaxInputTokens: 100, RecentMessages: 20}, 5, zap.NewNop())
+		precompactor := agentcontext.NewPrecompactor(builder)
+		h := New(&loopStub{}, nil, contextStub{result: &agentcontext.AgentContext{EstimatedTokens: 70, HistoryMessages: 25}}, sessions, nil, toolsStub{}, nil, 2, 4, time.Second, zap.NewNop())
+		h.SetPrecompactor(precompactor)
+		if _, err := h.Run(context.Background(), &RunRequest{Session: &model.Session{ID: "session", UserID: "user"}, Message: "current"}); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := precompactor.Close(ctx)
+		cancel()
+		if err != nil || sessions.loads.Load() != 0 {
+			t.Fatalf("failed role=%s close err=%v background loads=%d", failedRole, err, sessions.loads.Load())
+		}
+	}
 }
 
 func TestHarnessUsesPlannerOnlyWhenExplicitlyRequested(t *testing.T) {

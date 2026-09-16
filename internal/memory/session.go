@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,7 +32,7 @@ type SessionManager interface {
 	AppendMessage(context.Context, *model.Session, model.Message) error
 	GetMessages(context.Context, *model.Session) ([]model.Message, error)
 	GetRecentMessages(context.Context, *model.Session, int) ([]model.Message, error)
-	SaveSummary(context.Context, *model.Session, SessionSummary) error
+	SaveSummary(context.Context, *model.Session, *SessionSummary, SessionSummary) (bool, error)
 	GetSummary(context.Context, string) (*SessionSummary, error)
 }
 
@@ -127,19 +128,37 @@ func (m *RedisSessionManager) GetRecentMessages(ctx context.Context, session *mo
 	return m.loadMessages(ctx, session, int64(limit-1))
 }
 
-func (m *RedisSessionManager) SaveSummary(ctx context.Context, session *model.Session, summary SessionSummary) error {
+func (m *RedisSessionManager) SaveSummary(ctx context.Context, session *model.Session, expected *SessionSummary, summary SessionSummary) (bool, error) {
 	sessionID, err := validSessionID(session)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if summary.ThroughSequence <= summarySequence(expected) {
+		return false, fmt.Errorf("摘要水位线必须前进")
 	}
 	if summary.UpdatedAt.IsZero() {
 		summary.UpdatedAt = time.Now()
 	}
 	data, err := json.Marshal(summary)
 	if err != nil {
-		return fmt.Errorf("序列化会话摘要失败: %w", err)
+		return false, fmt.Errorf("序列化会话摘要失败: %w", err)
 	}
-	return m.cache.Set(ctx, m.summaryKey(sessionID), string(data), m.ttl)
+	old := ""
+	if expected != nil {
+		encoded, err := json.Marshal(expected)
+		if err != nil {
+			return false, fmt.Errorf("序列化旧会话摘要失败: %w", err)
+		}
+		old = string(encoded)
+	}
+	return m.cache.CompareAndSet(ctx, m.summaryKey(sessionID), old, string(data), m.ttl)
+}
+
+func summarySequence(summary *SessionSummary) int64 {
+	if summary == nil {
+		return 0
+	}
+	return summary.ThroughSequence
 }
 
 func (m *RedisSessionManager) GetSummary(ctx context.Context, sessionID string) (*SessionSummary, error) {
@@ -164,13 +183,14 @@ func (m *RedisSessionManager) loadMessages(ctx context.Context, session *model.S
 		return nil, err
 	}
 	messages := make([]model.Message, 0, len(items))
-	for i := len(items) - 1; i >= 0; i-- {
+	for i := range items {
 		var message model.Message
 		if err := json.Unmarshal([]byte(items[i]), &message); err != nil {
 			return nil, fmt.Errorf("解析会话消息失败: %w", err)
 		}
 		messages = append(messages, message)
 	}
+	sort.Slice(messages, func(i, j int) bool { return messages[i].Sequence < messages[j].Sequence })
 	return messages, nil
 }
 

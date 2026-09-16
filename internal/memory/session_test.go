@@ -33,6 +33,15 @@ func (c *cacheStub) Set(_ context.Context, key, value string, ttl time.Duration)
 	c.values[key], c.expires[key] = value, ttl
 	return nil
 }
+func (c *cacheStub) CompareAndSet(_ context.Context, key, expected, value string, ttl time.Duration) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.values[key] != expected {
+		return false, nil
+	}
+	c.values[key], c.expires[key] = value, ttl
+	return true, nil
+}
 func (c *cacheStub) Delete(_ context.Context, key string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -124,7 +133,76 @@ func TestSessionOperationsRejectMissingValidatedSession(t *testing.T) {
 	if _, err := sessions.GetRecentMessages(context.Background(), nil, 0); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("GetRecentMessages err=%v", err)
 	}
-	if err := sessions.SaveSummary(context.Background(), nil, SessionSummary{}); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := sessions.SaveSummary(context.Background(), nil, nil, SessionSummary{}); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("SaveSummary err=%v", err)
+	}
+}
+
+func TestSaveSummaryOnlyWhenExpectedValueMatches(t *testing.T) {
+	store := newCacheStub()
+	sessions := NewSessionManager(store, user.NewManager(store, time.Hour), time.Hour)
+	session := &model.Session{ID: "session"}
+	first := SessionSummary{Content: "first", ThroughSequence: 2}
+	if saved, err := sessions.SaveSummary(context.Background(), session, nil, first); err != nil || !saved {
+		t.Fatalf("first saved=%v err=%v", saved, err)
+	}
+	stale := SessionSummary{Content: "stale", ThroughSequence: 4}
+	if saved, err := sessions.SaveSummary(context.Background(), session, nil, stale); err != nil || saved {
+		t.Fatalf("stale saved=%v err=%v", saved, err)
+	}
+	current, err := sessions.GetSummary(context.Background(), session.ID)
+	if err != nil || current.Content != "first" {
+		t.Fatalf("current=%+v err=%v", current, err)
+	}
+	if saved, err := sessions.SaveSummary(context.Background(), session, current, stale); err != nil || !saved {
+		t.Fatalf("updated saved=%v err=%v", saved, err)
+	}
+	if saved, err := sessions.SaveSummary(context.Background(), session, current, SessionSummary{ThroughSequence: 3}); err != nil || saved {
+		t.Fatalf("stale update saved=%v err=%v", saved, err)
+	}
+}
+
+func TestGetMessagesSortsBySequence(t *testing.T) {
+	store := newCacheStub()
+	sessions := NewSessionManager(store, user.NewManager(store, time.Hour), time.Hour)
+	session := &model.Session{ID: "session"}
+	store.lists[sessions.messagesKey(session.ID)] = []string{
+		`{"sequence":2,"content":"second"}`,
+		`{"sequence":1,"content":"first"}`,
+		`{"sequence":3,"content":"third"}`,
+	}
+	messages, err := sessions.GetMessages(context.Background(), session)
+	if err != nil || len(messages) != 3 || messages[0].Sequence != 1 || messages[2].Sequence != 3 {
+		t.Fatalf("messages=%+v err=%v", messages, err)
+	}
+}
+
+func TestSaveSummaryConcurrentWritersOnlyOneWins(t *testing.T) {
+	store := newCacheStub()
+	sessions := NewSessionManager(store, user.NewManager(store, time.Hour), time.Hour)
+	session := &model.Session{ID: "session"}
+	var workers sync.WaitGroup
+	results := make(chan bool, 2)
+	for _, sequence := range []int64{3, 4} {
+		workers.Add(1)
+		go func(sequence int64) {
+			defer workers.Done()
+			saved, err := sessions.SaveSummary(context.Background(), session, nil, SessionSummary{Content: "summary", ThroughSequence: sequence})
+			if err != nil {
+				t.Errorf("SaveSummary: %v", err)
+			}
+			results <- saved
+		}(sequence)
+	}
+	workers.Wait()
+	close(results)
+	wins := 0
+	for saved := range results {
+		if saved {
+			wins++
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("concurrent winners=%d, want 1", wins)
 	}
 }

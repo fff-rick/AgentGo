@@ -18,12 +18,16 @@ import (
 
 var ErrContextTooLarge = errors.New("context_too_large")
 
+var errSummaryChanged = errors.New("会话摘要已被其他请求更新")
+var errMessageGap = errors.New("消息序号不连续，暂不压缩")
+
 type AgentContext struct {
 	SystemPrompt    string
 	Messages        []model.LLMMessage
 	Memories        []model.MemoryItem
 	Tools           []model.ToolDef
 	EstimatedTokens int
+	HistoryMessages int
 }
 
 type BuildInput struct {
@@ -121,20 +125,20 @@ func (b *ContextBuilder) Build(ctx context.Context, input BuildInput) (*AgentCon
 	messages = append(messages, current)
 	estimated := estimateContext(system, messages, input.Tools)
 	if b.compactor.ShouldCompact(ContextBudgetInput{EstimatedTokens: estimated, MaxTokens: b.cfg.MaxInputTokens}) && len(active) > b.cfg.RecentMessages {
-		cut := len(active) - b.cfg.RecentMessages
-		result, compactErr := b.compactor.Compact(ctx, CompactionInput{
-			ExistingSummary: summaryContent(summary), Messages: active[:cut], RetainedMessages: active[cut:], MaxTokens: b.cfg.SummaryMaxTokens,
-		})
-		if compactErr != nil {
-			b.logger.Warn("会话压缩失败，按预算保留近期消息", zap.Error(compactErr))
-		} else {
-			newSummary := &memory.SessionSummary{Content: result.Summary, ThroughSequence: active[cut-1].Sequence, UpdatedAt: time.Now()}
-			if err := b.sessions.SaveSummary(ctx, session, *newSummary); err != nil {
-				b.logger.Warn("保存会话摘要失败", zap.Error(err))
+		newSummary, remaining, compactErr := b.compact(ctx, session, summary, active)
+		switch {
+		case compactErr == nil:
+			summary, active = newSummary, remaining
+		case errors.Is(compactErr, errSummaryChanged):
+			latestSummary, summaryErr := b.sessions.GetSummary(ctx, session.ID)
+			latestMessages, messagesErr := b.sessions.GetMessages(ctx, session)
+			if summaryErr == nil && messagesErr == nil {
+				summary, active = latestSummary, afterSummary(latestMessages, latestSummary)
 			} else {
-				summary = newSummary
-				active = active[cut:]
+				b.logger.Warn("重新加载会话摘要失败，按预算裁剪", zap.Errors("errors", []error{summaryErr, messagesErr}))
 			}
+		default:
+			b.logger.Warn("会话压缩失败，按预算保留近期消息", zap.Error(compactErr))
 		}
 	}
 
@@ -148,14 +152,74 @@ func (b *ContextBuilder) Build(ctx context.Context, input BuildInput) (*AgentCon
 		memories = memories[:len(memories)-1]
 	}
 	for estimated > b.cfg.MaxInputTokens && len(active) > 0 {
-		active = active[1:]
+		active = dropOldestTurn(active)
 		messages = append(toLLMMessages(active), current)
 		estimated = estimateContext(system, messages, input.Tools)
 	}
 	if estimated > b.cfg.MaxInputTokens {
 		return nil, fmt.Errorf("%w: 无法在 %d token 内构建上下文", ErrContextTooLarge, b.cfg.MaxInputTokens)
 	}
-	return &AgentContext{SystemPrompt: system, Messages: messages, Memories: memories, Tools: input.Tools, EstimatedTokens: estimated}, nil
+	return &AgentContext{SystemPrompt: system, Messages: messages, Memories: memories, Tools: input.Tools, EstimatedTokens: estimated, HistoryMessages: len(active)}, nil
+}
+
+// dropOldestTurn never leaves an assistant reply without its preceding user message.
+func dropOldestTurn(messages []model.Message) []model.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	end := 1
+	for end < len(messages) && messages[end].Role != "user" {
+		end++
+	}
+	return messages[end:]
+}
+
+func (b *ContextBuilder) compact(ctx context.Context, session *model.Session, summary *memory.SessionSummary, active []model.Message) (*memory.SessionSummary, []model.Message, error) {
+	cut := len(active) - b.cfg.RecentMessages
+	for cut > 0 && cut < len(active) && active[cut].Role != "user" {
+		cut--
+	}
+	if cut <= 0 {
+		return summary, active, nil
+	}
+	sequence := int64(0)
+	if summary != nil {
+		sequence = summary.ThroughSequence
+	}
+	for _, message := range active[:cut] {
+		if message.Sequence != sequence+1 {
+			return nil, nil, errMessageGap
+		}
+		sequence = message.Sequence
+	}
+	result, err := b.compactor.Compact(ctx, CompactionInput{
+		ExistingSummary: summaryContent(summary), Messages: active[:cut], RetainedMessages: active[cut:], MaxTokens: b.cfg.SummaryMaxTokens,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	newSummary := memory.SessionSummary{Content: result.Summary, ThroughSequence: sequence, UpdatedAt: time.Now()}
+	saved, err := b.sessions.SaveSummary(ctx, session, summary, newSummary)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !saved {
+		return nil, nil, errSummaryChanged
+	}
+	return &newSummary, active[cut:], nil
+}
+
+func (b *ContextBuilder) precompact(ctx context.Context, session *model.Session) error {
+	summary, err := b.sessions.GetSummary(ctx, session.ID)
+	if err != nil {
+		return err
+	}
+	messages, err := b.sessions.GetMessages(ctx, session)
+	if err != nil {
+		return err
+	}
+	_, _, err = b.compact(ctx, session, summary, afterSummary(messages, summary))
+	return err
 }
 
 func afterSummary(messages []model.Message, summary *memory.SessionSummary) []model.Message {
@@ -197,7 +261,15 @@ func buildSystemPrompt(base string, instructions []string, user *model.UserInfo,
 		result.WriteString("</session_summary>")
 	}
 	if len(memories) > 0 {
-		if encoded, err := json.Marshal(memories); err == nil {
+		type promptMemory struct {
+			Kind    model.MemoryKind `json:"kind"`
+			Content string           `json:"content"`
+		}
+		visible := make([]promptMemory, 0, len(memories))
+		for _, item := range memories {
+			visible = append(visible, promptMemory{item.Kind, item.Content})
+		}
+		if encoded, err := json.Marshal(visible); err == nil {
 			result.WriteString("\n<semantic_memories>")
 			result.Write(encoded)
 			result.WriteString("</semantic_memories>")

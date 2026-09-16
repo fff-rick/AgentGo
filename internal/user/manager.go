@@ -15,7 +15,7 @@ const keyPrefix = "agentgo:v2:user:"
 
 var userIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 
-// Manager persists client-provided user context. It intentionally performs no authentication.
+// Manager persists user context; HTTP authentication is enforced before callers create a session.
 type Manager struct {
 	cache cache.Cache
 	ttl   time.Duration

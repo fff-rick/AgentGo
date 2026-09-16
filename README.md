@@ -104,16 +104,18 @@ TUI 会实时展示 Agent Loop 阶段、模型显式 reasoning、原生 Function
 /import /home/xin/docs/orders.xlsx
 ```
 
-Markdown 必须为 UTF-8 且不超过 10 MiB；PDF、DOCX、XLSX 不超过 50 MiB。文件导入异步执行，TUI 会轮询状态并展示精确的页码或 Excel 单元格范围。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/plan <任务>` 显式启用 Planner-Executor，`/clear` 创建新会话，`Ctrl+C` 退出。Planner 模式由调用方指定，与意图识别无关。TUI 使用 `AGENTGO_USER_ID`（默认 `local-user`）创建会话。也可先通过 API 创建会话，再观察 SSE 事件：
+Markdown 必须为 UTF-8 且不超过 10 MiB；PDF、DOCX、XLSX 不超过 50 MiB。文件导入异步执行，TUI 会轮询状态并展示精确的页码或 Excel 单元格范围。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/plan <任务>` 显式启用 Planner-Executor，`/clear` 创建新会话，`Ctrl+C` 退出。Planner 模式由调用方指定，与意图识别无关。本地模式无需令牌；启用 OIDC 后需设置 `AGENTGO_ACCESS_TOKEN`。`AGENTGO_USER_ID` 仅作显示名，身份由服务端决定。也可先通过 API 创建会话，再观察 SSE 事件：
 
 ```bash
 SESSION_ID=$(curl -s http://localhost:8080/api/v1/sessions \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $AGENTGO_ACCESS_TOKEN" \
   -d '{"user":{"user_id":"demo-user","display_name":"Demo"}}' \
   | jq -r '.data.session_id')
 
 curl -N http://localhost:8080/api/v1/chat/stream \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $AGENTGO_ACCESS_TOKEN" \
   -d "{\"session_id\":\"$SESSION_ID\",\"message\":\"从知识库介绍 AgentGo\"}"
 ```
 
@@ -209,15 +211,23 @@ docker compose up -d searxng
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/v1/sessions` | 使用客户端提供的用户信息创建会话 |
+| POST | `/api/v1/sessions` | 为当前用户创建会话；请求体 user_id 不作为身份依据 |
 | POST | `/api/v1/chat` | 对话（同步） |
 | POST | `/api/v1/chat/stream` | 对话（SSE 流式） |
+| GET | `/api/v1/memories` | 分页查看本人记忆（limit、offset） |
+| GET | `/api/v1/memories/:id` | 查看本人记忆详情 |
+| GET | `/api/v1/memories/:id/versions` | 查看本人记忆的历史版本 |
+| PUT | `/api/v1/memories/:id` | 纠正记忆，提交 content 与当前 version |
+| PATCH | `/api/v1/memories/:id/expiry` | 设置 valid_to 与当前 version |
+| DELETE | `/api/v1/memories/:id` | 遗忘本人记忆及历史版本 |
 | POST | `/api/v1/documents` | 上传文档 |
 | POST | `/api/v1/documents/import` | 异步 multipart 上传 Markdown/PDF/DOCX/XLSX，文件字段为 `file` |
 | GET  | `/api/v1/documents/:id` | 查询文档状态 |
 | GET  | `/health` | 健康检查 |
 
 聊天请求可通过 `"options":{"mode":"planner"}` 显式启用 Planner-Executor；省略或使用 `agent` 时进入默认 AgentLoop。
+
+OIDC 默认关闭（`APP_AUTH_ENABLED=false`）：会话、聊天和记忆接口无需令牌，所有请求共享 `local-user`，请求体中的 `user_id` 不作为身份依据。此模式只适合可信的本地环境，不要将服务暴露到公网或多人网络；Docker Compose 默认只发布到宿主机 `127.0.0.1`，如需远程访问可设置 `AGENTGO_BIND_HOST`，但应先启用 OIDC。若要启用鉴权，设置 `APP_AUTH_ENABLED=true`，并配置 `APP_AUTH_ISSUER` 与 `APP_AUTH_AUDIENCE`；此时上述接口必须携带 Bearer token，服务会校验 RS256 签名、受众、签发者及有效期，缺少配置时启动失败。切换模式不会自动迁移旧会话或记忆的归属。旧 `semantic_memory_v1` collection 保留但不再召回，新记忆写入 `semantic_memory_v2`。
 
 ## 设计亮点
 

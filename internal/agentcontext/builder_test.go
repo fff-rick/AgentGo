@@ -35,9 +35,12 @@ func (s *sessionStub) GetMessages(context.Context, *model.Session) ([]model.Mess
 func (*sessionStub) GetRecentMessages(context.Context, *model.Session, int) ([]model.Message, error) {
 	return nil, nil
 }
-func (s *sessionStub) SaveSummary(_ context.Context, _ *model.Session, summary memory.SessionSummary) error {
+func (s *sessionStub) SaveSummary(_ context.Context, _ *model.Session, expected *memory.SessionSummary, summary memory.SessionSummary) (bool, error) {
+	if s.summary != expected {
+		return false, nil
+	}
 	s.summary = &summary
-	return nil
+	return true, nil
 }
 func (s *sessionStub) GetSummary(context.Context, string) (*memory.SessionSummary, error) {
 	return s.summary, nil
@@ -154,6 +157,60 @@ func TestBuilderRejectsOversizedCurrentInput(t *testing.T) {
 	_, err := builder.Build(context.Background(), BuildInput{Session: &model.Session{ID: "session", UserID: "user-1"}, Query: strings.Repeat("界", 100), SystemPrompt: "system"})
 	if !errors.Is(err, ErrContextTooLarge) {
 		t.Fatalf("err=%v, want context_too_large", err)
+	}
+}
+
+func TestDropOldestTurnNeverLeavesOrphanAssistant(t *testing.T) {
+	messages := []model.Message{{Role: "user", Content: "order"}, {Role: "assistant", Content: "number?"}, {Role: "user", Content: "A123"}, {Role: "assistant", Content: "done"}}
+	remaining := dropOldestTurn(messages)
+	if len(remaining) != 2 || remaining[0].Role != "user" || remaining[0].Content != "A123" {
+		t.Fatalf("remaining=%+v", remaining)
+	}
+	if got := dropOldestTurn([]model.Message{{Role: "assistant", Content: "orphan"}, {Role: "user", Content: "next"}}); len(got) != 1 || got[0].Role != "user" {
+		t.Fatalf("orphan remains: %+v", got)
+	}
+}
+
+func TestCompactionDoesNotSplitRetainedTurn(t *testing.T) {
+	active := []model.Message{{Sequence: 1, Role: "user", Content: "one"}, {Sequence: 2, Role: "assistant", Content: "reply"}, {Sequence: 3, Role: "user", Content: "two"}, {Sequence: 4, Role: "assistant", Content: "reply"}}
+	compactor := &compactorStub{}
+	builder := NewBuilder(&sessionStub{}, semanticMemoryStub{}, compactor, config.ContextConfig{MaxInputTokens: 100, RecentMessages: 3, SummaryMaxTokens: 20}, 5, zap.NewNop())
+	summary, remaining, err := builder.compact(context.Background(), &model.Session{ID: "session", UserID: "user-1"}, nil, active)
+	if err != nil || summary != nil || len(remaining) != len(active) || compactor.calls != 0 {
+		t.Fatalf("summary=%+v remaining=%+v err=%v calls=%d", summary, remaining, err, compactor.calls)
+	}
+}
+
+type conflictingSummarySessions struct{ *sessionStub }
+
+func (s *conflictingSummarySessions) SaveSummary(_ context.Context, _ *model.Session, _ *memory.SessionSummary, _ memory.SessionSummary) (bool, error) {
+	s.summary = &memory.SessionSummary{Content: "newer summary", ThroughSequence: 3}
+	return false, nil
+}
+
+func TestBuilderReloadsSummaryAfterConcurrentUpdate(t *testing.T) {
+	sessions := &conflictingSummarySessions{sessionStub: &sessionStub{}}
+	for sequence := int64(1); sequence <= 5; sequence++ {
+		sessions.messages = append(sessions.messages, model.Message{Sequence: sequence, Role: "user", Content: strings.Repeat("a", 500)})
+	}
+	compactor := &compactorStub{}
+	builder := NewBuilder(sessions, semanticMemoryStub{}, compactor, config.ContextConfig{MaxInputTokens: 500, RecentMessages: 2, SummaryMaxTokens: 100}, 5, zap.NewNop())
+	result, err := builder.Build(context.Background(), BuildInput{Session: &model.Session{ID: "session", UserID: "user-1"}, Query: "next", SystemPrompt: "system"})
+	if err != nil || compactor.calls != 1 || !strings.Contains(result.SystemPrompt, "newer summary") || len(result.Messages) != 3 {
+		t.Fatalf("result=%+v err=%v compact_calls=%d", result, err, compactor.calls)
+	}
+}
+
+func TestBuilderDoesNotCompactAcrossSequenceGap(t *testing.T) {
+	sessions := &sessionStub{}
+	for _, sequence := range []int64{1, 2, 4, 5, 6} {
+		sessions.messages = append(sessions.messages, model.Message{Sequence: sequence, Role: "user", Content: strings.Repeat("a", 500)})
+	}
+	compactor := &compactorStub{}
+	builder := NewBuilder(sessions, semanticMemoryStub{}, compactor, config.ContextConfig{MaxInputTokens: 500, RecentMessages: 2, SummaryMaxTokens: 100}, 5, zap.NewNop())
+	result, err := builder.Build(context.Background(), BuildInput{Session: &model.Session{ID: "session", UserID: "user-1"}, Query: "next", SystemPrompt: "system"})
+	if err != nil || compactor.calls != 0 || sessions.summary != nil || result.EstimatedTokens > 500 {
+		t.Fatalf("result=%+v err=%v compact_calls=%d summary=%+v", result, err, compactor.calls, sessions.summary)
 	}
 }
 

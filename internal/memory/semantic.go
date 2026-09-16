@@ -49,6 +49,7 @@ func (s *SemanticStore) Save(ctx context.Context, item model.MemoryItem) error {
 			"importance":        fmt.Sprintf("%g", item.Importance),
 			"source_session_id": item.SourceSessionID,
 			"created_at":        item.CreatedAt.UTC().Format(time.RFC3339Nano),
+			"version":           item.Version,
 		},
 	}})
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/agent"
 	"github.com/enterprise/ai-agent-go/internal/agentcontext"
 	"github.com/enterprise/ai-agent-go/internal/agentloop"
+	"github.com/enterprise/ai-agent-go/internal/auth"
 	"github.com/enterprise/ai-agent-go/internal/harness"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
@@ -73,6 +74,7 @@ func TestChatEndpointsRejectUnknownSessionBeforeRunningAgent(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		context, _ := gin.CreateTestContext(recorder)
 		context.Request = req
+		auth.SetIdentity(context, "user-1")
 		if path == "/api/v1/chat" {
 			handler.Chat(context)
 		} else {
@@ -104,6 +106,7 @@ func TestChatEndpointsReadSessionOnce(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		context, _ := gin.CreateTestContext(recorder)
 		context.Request = req
+		auth.SetIdentity(context, "user-1")
 		if path == "/api/v1/chat" {
 			handler.Chat(context)
 		} else {
@@ -111,6 +114,28 @@ func TestChatEndpointsReadSessionOnce(t *testing.T) {
 		}
 		if recorder.Code != http.StatusOK || manager.getCalls != 1 {
 			t.Fatalf("path=%s status=%d GetSession calls=%d body=%s", path, recorder.Code, manager.getCalls, recorder.Body.String())
+		}
+	}
+}
+
+func TestChatRejectsOtherUsersSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	manager := &sessionManagerStub{}
+	handler := NewChatHandler(nil, manager, zap.NewNop())
+	for _, path := range []string{"/api/v1/chat", "/api/v1/chat/stream"} {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{"session_id":"session-1","message":"hello"}`))
+		req.Header.Set("Content-Type", "application/json")
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = req
+		auth.SetIdentity(ctx, "other-user")
+		if path == "/api/v1/chat" {
+			handler.Chat(ctx)
+		} else {
+			handler.ChatStream(ctx)
+		}
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("path=%s status=%d", path, recorder.Code)
 		}
 	}
 }
@@ -131,6 +156,7 @@ func TestChatToolsAllowlistValidationAndExplicitEmptyList(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		context, _ := gin.CreateTestContext(recorder)
 		context.Request = req
+		auth.SetIdentity(context, "user-1")
 		handler.Chat(context)
 		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("tools=%s status=%d body=%s", toolsJSON, recorder.Code, recorder.Body.String())
@@ -145,6 +171,7 @@ func TestChatToolsAllowlistValidationAndExplicitEmptyList(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	context, _ := gin.CreateTestContext(recorder)
 	context.Request = req
+	auth.SetIdentity(context, "user-1")
 	handler.Chat(context)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("empty allowlist status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -163,8 +190,8 @@ func (*sessionManagerStub) GetMessages(context.Context, *model.Session) ([]model
 func (*sessionManagerStub) GetRecentMessages(context.Context, *model.Session, int) ([]model.Message, error) {
 	return nil, nil
 }
-func (*sessionManagerStub) SaveSummary(context.Context, *model.Session, memory.SessionSummary) error {
-	return nil
+func (*sessionManagerStub) SaveSummary(context.Context, *model.Session, *memory.SessionSummary, memory.SessionSummary) (bool, error) {
+	return true, nil
 }
 func (*sessionManagerStub) GetSummary(context.Context, string) (*memory.SessionSummary, error) {
 	return nil, nil
@@ -174,6 +201,7 @@ func TestCreateSessionValidatesAndReturnsBinding(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	manager := &sessionManagerStub{}
 	router := gin.New()
+	router.Use(func(c *gin.Context) { auth.SetIdentity(c, "user-1"); c.Next() })
 	router.POST("/api/v1/sessions", NewSessionHandler(manager).Create)
 
 	body := []byte(`{"user":{"user_id":"user-1","display_name":"Xin","metadata":{"language":"zh-CN"}}}`)
@@ -195,7 +223,7 @@ func TestCreateSessionValidatesAndReturnsBinding(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/sessions", bytes.NewBufferString(`{"user":{"user_id":"bad id"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, req)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("invalid user status=%d", recorder.Code)
+	if recorder.Code != http.StatusOK || manager.created.UserID != "user-1" {
+		t.Fatalf("client user_id should be ignored: status=%d user=%q", recorder.Code, manager.created.UserID)
 	}
 }

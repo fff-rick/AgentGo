@@ -42,6 +42,9 @@ func TestExpandModelEnv(t *testing.T) {
 }
 
 func TestLoadMultiModelRoutingConfig(t *testing.T) {
+	t.Setenv("APP_AUTH_ENABLED", "true")
+	t.Setenv("APP_AUTH_ISSUER", "https://issuer.example")
+	t.Setenv("APP_AUTH_AUDIENCE", "agentgo")
 	t.Setenv("APP_LLM_BASE_URL", "https://example.com")
 	t.Setenv("APP_LLM_API_KEY", "gpt-key")
 	t.Setenv("APP_QWEN_BASE_URL", "http://localhost:11434")
@@ -53,10 +56,13 @@ func TestLoadMultiModelRoutingConfig(t *testing.T) {
 	if len(cfg.LLM.Models) != 2 || cfg.LLM.Models[0].Priority != 1 || cfg.LLM.Models[1].Priority != 10 || cfg.Agent.ToolModel != "qwen-tools" {
 		t.Fatalf("unexpected routing config: models=%+v agent=%+v", cfg.LLM.Models, cfg.Agent)
 	}
-	if cfg.Memory.SessionTTL != 720*time.Hour || cfg.Memory.SemanticCollection != "semantic_memory_v1" || cfg.Context.MaxInputTokens != 30000 || cfg.Context.RecentMessages != 20 {
+	if cfg.Memory.SessionTTL != 720*time.Hour || cfg.Memory.SemanticCollection != "semantic_memory_v2" || cfg.Context.MaxInputTokens != 30000 || cfg.Context.RecentMessages != 20 {
 		t.Fatalf("unexpected memory/context config: memory=%+v context=%+v", cfg.Memory, cfg.Context)
 	}
 	if cfg.Tools.LazyLoadThreshold != 3 || cfg.Tools.MaxDiscoveryCalls != 4 {
 		t.Fatalf("unexpected tool config: %+v", cfg.Tools)
+	}
+	if !cfg.Auth.Enabled || cfg.Auth.Issuer != "https://issuer.example" || cfg.Auth.Audience != "agentgo" {
+		t.Fatalf("auth config=%+v", cfg.Auth)
 	}
 }

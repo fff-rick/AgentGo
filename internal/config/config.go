@@ -26,6 +26,7 @@ type Config struct {
 	RAG       RAGConfig       `mapstructure:"rag"`
 	Search    SearchConfig    `mapstructure:"search"`
 	Memory    MemoryConfig    `mapstructure:"memory"`
+	Auth      AuthConfig      `mapstructure:"auth"`
 	Context   ContextConfig   `mapstructure:"context"`
 	Tools     ToolConfig      `mapstructure:"tools"`
 	Log       LogConfig       `mapstructure:"log"`
@@ -122,6 +123,12 @@ type MemoryConfig struct {
 	ExtractionTimeout       time.Duration `mapstructure:"extraction_timeout"`
 	ExtractionMinImportance float64       `mapstructure:"extraction_min_importance"`
 	ExtractionMaxItems      int           `mapstructure:"extraction_max_items"`
+}
+
+type AuthConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	Issuer   string `mapstructure:"issuer"`
+	Audience string `mapstructure:"audience"`
 }
 
 type ContextConfig struct {
@@ -307,11 +314,14 @@ func setDefaults(v *viper.Viper) {
 
 	// Memory 和上下文默认配置
 	v.SetDefault("memory.session_ttl", "720h")
-	v.SetDefault("memory.semantic_collection", "semantic_memory_v1")
+	v.SetDefault("memory.semantic_collection", "semantic_memory_v2")
 	v.SetDefault("memory.semantic_top_k", 5)
 	v.SetDefault("memory.extraction_timeout", "10s")
 	v.SetDefault("memory.extraction_min_importance", 0.7)
 	v.SetDefault("memory.extraction_max_items", 5)
+	v.SetDefault("auth.enabled", false)
+	v.SetDefault("auth.issuer", "")
+	v.SetDefault("auth.audience", "")
 	v.SetDefault("context.max_input_tokens", 30000)
 	v.SetDefault("context.recent_messages", 20)
 	v.SetDefault("context.summary_max_tokens", 2000)
