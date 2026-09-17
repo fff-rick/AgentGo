@@ -66,3 +66,17 @@ func TestLoadMultiModelRoutingConfig(t *testing.T) {
 		t.Fatalf("auth config=%+v", cfg.Auth)
 	}
 }
+
+func TestLoadEmbeddingEnv(t *testing.T) {
+	t.Setenv("APP_EMBEDDING_BASE_URL", "https://example.com/ai/v1/embeddings")
+	t.Setenv("APP_EMBEDDING_MODEL", "@cf/qwen/qwen3-embedding-0.6b")
+	t.Setenv("APP_EMBEDDING_API_KEY", "test-secret")
+	t.Setenv("APP_MEMORY_SEMANTIC_COLLECTION", "semantic_memory_qwen3_embedding_0_6b")
+	cfg, err := Load("../../config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Embedding.BaseURL != "https://example.com/ai/v1/embeddings" || cfg.Embedding.Model != "@cf/qwen/qwen3-embedding-0.6b" || cfg.Embedding.APIKey != "test-secret" || cfg.Memory.SemanticCollection != "semantic_memory_qwen3_embedding_0_6b" {
+		t.Fatal("embedding environment override was not loaded")
+	}
+}

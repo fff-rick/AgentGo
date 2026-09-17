@@ -94,6 +94,8 @@ make docker-stop
 
 Trace 由 OpenTelemetry 导出到 Tempo（默认 `http://localhost:3200`），可在 Grafana Explore 中选择 Tempo 并按响应头 `X-Trace-ID` 查询。原有 `X-Request-ID` 和响应 JSON 的 `trace_id` 仍是请求 ID；入站 `traceparent` 用于跨服务接续。Compose 默认全量采样，可用 `OTEL_TRACES_SAMPLER_ARG` 设置 0～1 的采样比例。span 不包含提示词、对话内容或工具输入输出；异步记忆与预压缩任务使用独立 Trace 链接来源请求。
 
+Embedding 默认使用 Ollama。配置 `APP_EMBEDDING_API_KEY` 后，改用 OpenAI 兼容的 `/embeddings` 接口；`APP_EMBEDDING_BASE_URL` 可填写 `/v1` 基础地址或完整 `/v1/embeddings` 地址。切换模型时需同时确认 `APP_EMBEDDING_DIMENSION` 和 `APP_MILVUS_DIMENSION`，并为文档和长期记忆配置新的 Milvus collection（`APP_MILVUS_COLLECTION_NAME`、`APP_MEMORY_SEMANTIC_COLLECTION`）。不同模型生成的同维向量也不能混用；旧文档需要重新导入。
+
 ### 可观察 TUI
 
 服务启动后，在另一个终端运行：
@@ -167,8 +169,9 @@ APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 | `APP_LLM_BASE_URL` | `https://api.openai.com` | 主模型 API 根地址 |
 | `APP_LLM_API_KEY` | 空 | 主模型 API 密钥 |
 | `APP_QWEN_BASE_URL` | `http://host.docker.internal:11434` | 本地 Qwen 的 OpenAI-compatible API 根地址 |
-| `APP_EMBEDDING_BASE_URL` | `http://host.docker.internal:11434` | Ollama 原生 API 根地址 |
+| `APP_EMBEDDING_BASE_URL` | `http://host.docker.internal:11434` | Ollama 根地址，或 OpenAI 兼容的 `/v1`、`/v1/embeddings` 地址 |
 | `APP_EMBEDDING_MODEL` | `bge-m3:latest` | embedding 模型 |
+| `APP_EMBEDDING_API_KEY` | 空 | 配置后使用 OpenAI 兼容接口和 Bearer 鉴权 |
 | `APP_EMBEDDING_DIMENSION` | `1024` | embedding 输出维度 |
 | `APP_RAG_SCORE_THRESHOLD` | `0.5` | 最低相关性分数（0–1），低于该值的片段不会进入回答上下文 |
 | `APP_RAG_ENABLE_RERANK` | `true` | 是否使用 LLM 对向量召回结果重排 |
@@ -181,13 +184,13 @@ APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 | `APP_SERVER_WRITE_TIMEOUT` | `300s` | 本地模型完整请求的写超时 |
 | `APP_AGENT_ENABLE_REFLECTION` | `false` | 是否额外调用一次模型反思答案 |
 | `APP_MEMORY_SESSION_TTL` | `720h` | 用户、会话和完整原始消息的滑动 TTL |
-| `APP_MEMORY_SEMANTIC_COLLECTION` | `semantic_memory_v1` | 用户隔离的长期语义记忆 collection |
+| `APP_MEMORY_SEMANTIC_COLLECTION` | `semantic_memory_v2` | 用户隔离的长期语义记忆 collection |
 | `APP_CONTEXT_MAX_INPUT_TOKENS` | `30000` | 触发会话压缩的估算输入预算 |
 | `APP_CONTEXT_RECENT_MESSAGES` | `20` | 压缩后优先保留的最近消息数 |
 | `APP_TOOLS_LAZY_LOAD_THRESHOLD` | `3` | 每个会话最多保留的业务工具 Schema 数量 |
 | `APP_TOOLS_MAX_DISCOVERY_CALLS` | `4` | 单次 Agent Run 最多允许的 `list_tools` 控制调用次数 |
 
-文档上传会按规范化后的内容类型和标题生成稳定文档 ID，并按原始内容生成 ContentHash；同一文档内容未变化时跳过处理，内容变化时覆盖 PostgreSQL 索引和 Milvus 向量并清理多余旧分块。分块经 Ollama 批量向量化后 Upsert 到 Milvus，同时通过纯 Go 中文分词写入 PostgreSQL 倒排词频索引并使用 BM25 排序。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。
+文档上传会按规范化后的内容类型和标题生成稳定文档 ID，并按原始内容生成 ContentHash；同一文档内容未变化时跳过处理，内容变化时覆盖 PostgreSQL 索引和 Milvus 向量并清理多余旧分块。分块经配置的 Embedding 服务批量向量化后 Upsert 到 Milvus，同时通过纯 Go 中文分词写入 PostgreSQL 倒排词频索引并使用 BM25 排序。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。
 
 工具 Schema 按会话惰性加载：每轮默认只携带 `list_tools` 和最多 3 个最近使用的业务工具。`options.tools` 缺省或为 `null` 时允许全部注册工具，显式 `[]` 时禁用全部业务工具，非空数组作为工具允许列表；未知工具名会返回 HTTP 400。
 

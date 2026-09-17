@@ -87,10 +87,11 @@ type MilvusConfig struct {
 	ConnectTimeout time.Duration `mapstructure:"connect_timeout"`
 }
 
-// EmbeddingConfig Ollama embedding 服务配置
+// EmbeddingConfig supports Ollama and OpenAI-compatible embedding services.
 type EmbeddingConfig struct {
 	BaseURL   string        `mapstructure:"base_url"`
 	Model     string        `mapstructure:"model"`
+	APIKey    string        `mapstructure:"api_key"`
 	Dimension int           `mapstructure:"dimension"`
 	BatchSize int           `mapstructure:"batch_size"`
 	Timeout   time.Duration `mapstructure:"timeout"`
@@ -289,9 +290,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("milvus.metric_type", "COSINE")
 	v.SetDefault("milvus.connect_timeout", "30s")
 
-	// Ollama embedding 默认配置（bge-m3 输出 1024 维向量）
+	// Embedding 默认使用 Ollama（bge-m3 输出 1024 维向量）。
 	v.SetDefault("embedding.base_url", "http://localhost:11434")
 	v.SetDefault("embedding.model", "bge-m3:latest")
+	v.SetDefault("embedding.api_key", "")
 	v.SetDefault("embedding.dimension", 1024)
 	v.SetDefault("embedding.batch_size", 32)
 	v.SetDefault("embedding.timeout", "60s")
