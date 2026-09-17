@@ -87,9 +87,9 @@ func main() {
 			zap.Int("embedding_dimension", cfg.Embedding.Dimension),
 			zap.Int("milvus_dimension", cfg.Milvus.Dimension))
 	}
-	embeddingClient, err := embedding.NewOllamaClient(cfg.Embedding)
+	embeddingClient, err := embedding.NewClient(cfg.Embedding)
 	if err != nil {
-		logger.Fatal("初始化 Ollama embedding 失败", zap.Error(err))
+		logger.Fatal("初始化 embedding 失败", zap.Error(err))
 	}
 
 	postgresCtx, postgresCancel := context.WithTimeout(context.Background(), 15*time.Second)
