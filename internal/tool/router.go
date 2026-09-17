@@ -8,8 +8,11 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 	"github.com/enterprise/ai-agent-go/pkg/common"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Router 工具路由器。
@@ -40,7 +43,31 @@ func (r *Router) Execute(ctx context.Context, toolName, input string) (*ToolResu
 	return r.ExecuteScoped(ctx, Scope{}, toolName, input)
 }
 
-func (r *Router) ExecuteScoped(ctx context.Context, scope Scope, toolName, input string) (*ToolResult, error) {
+func (r *Router) ExecuteScoped(ctx context.Context, scope Scope, toolName, input string) (toolResult *ToolResult, toolErr error) {
+	startCall := time.Now()
+	metricTool := toolName
+	if toolName != ListToolsName {
+		if _, known := r.registry.Get(toolName); !known {
+			metricTool = "unknown"
+		}
+	}
+	ctx, span := trace.StartSpan(ctx, "tool."+metricTool, attribute.String("tool.name", metricTool))
+	defer func() {
+		span.SetAttributes(attribute.Bool("tool.success", toolErr == nil && toolResult != nil && toolResult.Success))
+		if toolErr == nil && (toolResult == nil || !toolResult.Success) {
+			trace.SetError(ctx, fmt.Errorf("tool failed"))
+		}
+		trace.Finish(span, toolErr)
+	}()
+	defer func() {
+		result := "success"
+		if toolErr != nil || toolResult == nil || !toolResult.Success {
+			result = "error"
+			metrics.Default.ToolErrors.WithLabelValues(metricTool).Inc()
+		}
+		metrics.Default.ToolCalls.WithLabelValues(metricTool, result).Inc()
+		metrics.Default.ToolDuration.WithLabelValues(metricTool).Observe(metrics.Seconds(startCall))
+	}()
 	if toolName == ListToolsName {
 		if r.manager == nil {
 			return nil, common.ErrToolNotFound(toolName)

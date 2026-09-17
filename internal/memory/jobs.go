@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/enterprise/ai-agent-go/internal/trace"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -92,18 +93,22 @@ func (r *JobRunner) expiryLoop() {
 }
 
 func (r *JobRunner) Enqueue(ctx context.Context, userID, sessionID, messageID, question string, sourceAt time.Time) error {
+	ctx, span := trace.StartSpan(ctx, "memory.enqueue")
+	defer span.End()
 	if r.closed.Load() {
 		return errors.New("记忆任务执行器已关闭")
 	}
 	if userID == "" || sessionID == "" || messageID == "" || question == "" {
 		return errors.New("提取任务缺少来源消息")
 	}
-	_, err := r.store.db.ExecContext(ctx, `INSERT INTO memory_jobs(id,kind,user_id,session_id,message_id,payload,created_at) VALUES($1,'extract',$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, uuid.NewString(), userID, sessionID, messageID, question, sourceAt)
+	_, err := r.store.db.ExecContext(ctx, `INSERT INTO memory_jobs(id,kind,user_id,session_id,message_id,payload,created_at,traceparent) VALUES($1,'extract',$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`, uuid.NewString(), userID, sessionID, messageID, question, sourceAt, trace.TraceParent(ctx))
+	trace.SetError(ctx, err)
 	return err
 }
 
 type memoryJob struct {
 	id, kind, userID, sessionID, messageID, payload string
+	traceparent                                     string
 	version                                         int64
 	attempts                                        int
 	createdAt                                       time.Time
@@ -113,7 +118,7 @@ func (r *JobRunner) claim(ctx context.Context) (memoryJob, error) {
 	var job memoryJob
 	err := r.store.db.QueryRowContext(ctx, `UPDATE memory_jobs SET status='working',lease_until=now()+interval '75 seconds'
 WHERE id=(SELECT id FROM memory_jobs WHERE (status='pending' AND next_at<=now()) OR (status='working' AND lease_until<now()) ORDER BY next_at,id LIMIT 1 FOR UPDATE SKIP LOCKED)
-RETURNING id,kind,user_id,session_id,message_id,payload,target_version,attempts,created_at`).Scan(&job.id, &job.kind, &job.userID, &job.sessionID, &job.messageID, &job.payload, &job.version, &job.attempts, &job.createdAt)
+RETURNING id,kind,user_id,session_id,message_id,payload,target_version,attempts,created_at,traceparent`).Scan(&job.id, &job.kind, &job.userID, &job.sessionID, &job.messageID, &job.payload, &job.version, &job.attempts, &job.createdAt, &job.traceparent)
 	return job, err
 }
 
@@ -145,7 +150,9 @@ func (r *JobRunner) worker() {
 			r.logger.Warn("领取记忆任务失败", zap.Error(err))
 			continue
 		}
-		err = r.run(ctx, job)
+		jobCtx, jobSpan := trace.StartLinked(ctx, "memory.job."+job.kind, job.traceparent)
+		err = r.run(jobCtx, job)
+		trace.Finish(jobSpan, err)
 		cancel()
 		// Persist completion even when the work deadline expired.
 		finishCtx, finishCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -218,7 +225,7 @@ func (r *JobRunner) requeueIfChanged(ctx context.Context, job memoryJob) error {
 	if version == job.version {
 		return nil
 	}
-	_, err := r.store.db.ExecContext(ctx, `INSERT INTO memory_jobs(id,kind,user_id,payload,target_version) VALUES($1,'index',$2,$3,$4)`, uuid.NewString(), job.userID, job.payload, version)
+	_, err := r.store.db.ExecContext(ctx, `INSERT INTO memory_jobs(id,kind,user_id,payload,target_version,traceparent) VALUES($1,'index',$2,$3,$4,$5)`, uuid.NewString(), job.userID, job.payload, version, trace.TraceParent(ctx))
 	return err
 }
 

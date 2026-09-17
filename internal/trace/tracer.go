@@ -1,89 +1,154 @@
-// Package trace 提供基于 OpenTelemetry 的链路追踪能力。
+// Package trace provides request-scoped OpenTelemetry tracing without payload capture.
 package trace
 
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-// TracerProvider 追踪提供者的封装
-type TracerProvider struct {
-	serviceName string
-}
+type TracerProvider struct{ provider *sdktrace.TracerProvider }
 
-// InitTracer 初始化全局链路追踪。
-// 实际生产环境中应配置 OTLP Exporter 将 Span 导出到 Jaeger/Tempo 等后端。
+// InitTracer uses standard OTLP environment variables; no endpoint means no exporter.
 func InitTracer(serviceName string) (*TracerProvider, error) {
-	// 实际实现示例：
-	// exporter, err := otlptrace.New(ctx, otlptracegrpc.NewClient(...))
-	// tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), ...)
-	// otel.SetTracerProvider(tp)
-
-	return &TracerProvider{serviceName: serviceName}, nil
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	ratio := 1.0
+	if raw := os.Getenv("OTEL_TRACES_SAMPLER_ARG"); raw != "" {
+		var err error
+		ratio, err = strconv.ParseFloat(raw, 64)
+		if err != nil || ratio < 0 || ratio > 1 {
+			return nil, fmt.Errorf("OTEL_TRACES_SAMPLER_ARG 必须在 0 到 1 之间")
+		}
+	}
+	var sampler sdktrace.Sampler
+	switch os.Getenv("OTEL_TRACES_SAMPLER") {
+	case "", "parentbased_traceidratio":
+		sampler = sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
+	case "traceidratio":
+		sampler = sdktrace.TraceIDRatioBased(ratio)
+	case "always_on":
+		sampler = sdktrace.AlwaysSample()
+	case "always_off":
+		sampler = sdktrace.NeverSample()
+	case "parentbased_always_on":
+		sampler = sdktrace.ParentBased(sdktrace.AlwaysSample())
+	case "parentbased_always_off":
+		sampler = sdktrace.ParentBased(sdktrace.NeverSample())
+	default:
+		return nil, fmt.Errorf("不支持的 OTEL_TRACES_SAMPLER")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := resource.New(ctx, resource.WithAttributes(semconv.ServiceName(serviceName)))
+	if err != nil {
+		return nil, err
+	}
+	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res), sdktrace.WithSampler(sampler)}
+	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" || os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != "" {
+		exporter, err := otlptracegrpc.New(ctx)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, sdktrace.WithBatcher(exporter))
+	}
+	p := sdktrace.NewTracerProvider(opts...)
+	otel.SetTracerProvider(p)
+	return &TracerProvider{provider: p}, nil
 }
 
-// Shutdown 优雅关闭追踪器，确保所有 Span 都已导出
 func (tp *TracerProvider) Shutdown(ctx context.Context) error {
-	// 实际实现: return tp.provider.Shutdown(ctx)
-	return nil
-}
-
-// StartSpan 创建一个新的 Span 并返回带 Span 的 Context。
-// 调用方必须在完成后调用 EndSpan。
-func StartSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
-	tracer := otel.Tracer("ai-agent-go")
-	ctx, span := tracer.Start(ctx, name,
-		trace.WithAttributes(attrs...),
-	)
-	return ctx, span
-}
-
-// AddEvent 在当前 Span 上添加事件
-func AddEvent(ctx context.Context, name string, attrs ...attribute.KeyValue) {
-	span := trace.SpanFromContext(ctx)
-	if span.IsRecording() {
-		span.AddEvent(name, trace.WithAttributes(attrs...))
+	if tp == nil || tp.provider == nil {
+		return nil
 	}
+	return tp.provider.Shutdown(ctx)
 }
 
-// SetError 在当前 Span 上记录错误
+func StartSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, oteltrace.Span) {
+	return otel.Tracer("agentgo").Start(ctx, name, oteltrace.WithAttributes(attrs...))
+}
+
+func StartServerSpan(ctx context.Context, name string) (context.Context, oteltrace.Span) {
+	return otel.Tracer("agentgo").Start(ctx, name, oteltrace.WithSpanKind(oteltrace.SpanKindServer))
+}
+
+func StartLinked(ctx context.Context, name, traceparent string) (context.Context, oteltrace.Span) {
+	options := []oteltrace.SpanStartOption{oteltrace.WithNewRoot()}
+	if parent := SpanContextFromTraceParent(traceparent); parent.IsValid() {
+		options = append(options, oteltrace.WithLinks(oteltrace.Link{SpanContext: parent}))
+	}
+	return otel.Tracer("agentgo").Start(ctx, name, options...)
+}
+
+// Finish marks failures without adding exception messages that may contain user data.
+func Finish(span oteltrace.Span, err error) {
+	if err != nil {
+		span.SetStatus(codes.Error, "operation failed")
+	}
+	span.End()
+}
+
 func SetError(ctx context.Context, err error) {
-	span := trace.SpanFromContext(ctx)
-	if span.IsRecording() && err != nil {
-		span.RecordError(err)
+	if err != nil {
+		oteltrace.SpanFromContext(ctx).SetStatus(codes.Error, "operation failed")
 	}
 }
 
-// TraceID 从 Context 中提取 TraceID 字符串
+func AddEvent(ctx context.Context, name string, attrs ...attribute.KeyValue) {
+	span := oteltrace.SpanFromContext(ctx)
+	if span.IsRecording() {
+		span.AddEvent(name, oteltrace.WithAttributes(attrs...))
+	}
+}
+
+func TraceParent(ctx context.Context) string {
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	return carrier.Get("traceparent")
+}
+
+func SpanContextFromTraceParent(value string) oteltrace.SpanContext {
+	if strings.TrimSpace(value) == "" {
+		return oteltrace.SpanContext{}
+	}
+	ctx := otel.GetTextMapPropagator().Extract(context.Background(), propagation.MapCarrier{"traceparent": value})
+	return oteltrace.SpanContextFromContext(ctx)
+}
+
 func TraceID(ctx context.Context) string {
-	span := trace.SpanFromContext(ctx)
-	if !span.SpanContext().IsValid() {
+	sc := oteltrace.SpanFromContext(ctx).SpanContext()
+	if !sc.IsValid() {
 		return ""
 	}
-	return span.SpanContext().TraceID().String()
+	return sc.TraceID().String()
 }
 
-// SpanID 从 Context 中提取 SpanID 字符串
 func SpanID(ctx context.Context) string {
-	span := trace.SpanFromContext(ctx)
-	if !span.SpanContext().IsValid() {
+	sc := oteltrace.SpanFromContext(ctx).SpanContext()
+	if !sc.IsValid() {
 		return ""
 	}
-	return span.SpanContext().SpanID().String()
+	return sc.SpanID().String()
 }
 
-// WrapError 为错误添加追踪信息
 func WrapError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
-	traceID := TraceID(ctx)
-	if traceID != "" {
-		return fmt.Errorf("[trace=%s] %w", traceID, err)
+	if id := TraceID(ctx); id != "" {
+		return fmt.Errorf("[trace=%s] %w", id, err)
 	}
 	return err
 }

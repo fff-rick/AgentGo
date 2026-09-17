@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 
 	"github.com/enterprise/ai-agent-go/internal/agent"
@@ -100,12 +101,19 @@ func main() {
 	defer postgresClient.Close()
 
 	// 链路追踪
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { logger.Warn("Trace 导出失败", zap.Error(err)) }))
 	tp, err := trace.InitTracer("ai-agent-go")
 	if err != nil {
 		logger.Warn("初始化链路追踪失败，将降级运行", zap.Error(err))
 	}
 	if tp != nil {
-		defer tp.Shutdown(context.Background())
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := tp.Shutdown(shutdownCtx); err != nil {
+				logger.Warn("Trace 关闭失败", zap.Error(err))
+			}
+		}()
 	}
 
 	// ======================== 4. 初始化核心组件 ========================

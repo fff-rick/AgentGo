@@ -13,7 +13,9 @@ import (
 
 	"github.com/enterprise/ai-agent-go/internal/config"
 	"github.com/enterprise/ai-agent-go/internal/memory"
+	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 )
 
 var ErrContextTooLarge = errors.New("context_too_large")
@@ -67,7 +69,13 @@ func NewBuilder(sessions memory.SessionManager, semantic memory.SemanticMemory, 
 	return &ContextBuilder{sessions: sessions, semantic: semantic, compactor: compactor, cfg: cfg, topK: topK, logger: logger}
 }
 
-func (b *ContextBuilder) Build(ctx context.Context, input BuildInput) (*AgentContext, error) {
+func (b *ContextBuilder) Build(ctx context.Context, input BuildInput) (built *AgentContext, buildErr error) {
+	ctx, span := trace.StartSpan(ctx, "context.build")
+	defer func() { trace.Finish(span, buildErr) }()
+	startLoad := time.Now()
+	defer func() {
+		metrics.Default.MemoryLoadDuration.WithLabelValues("context").Observe(metrics.Seconds(startLoad))
+	}()
 	session := input.Session
 	if session == nil || session.ID == "" {
 		return nil, memory.ErrSessionNotFound
@@ -92,13 +100,19 @@ func (b *ContextBuilder) Build(ctx context.Context, input BuildInput) (*AgentCon
 		return nil
 	})
 	group.Go(func() error {
+		loadCtx, loadSpan := trace.StartSpan(groupCtx, "redis.history")
+		defer loadSpan.End()
 		var err error
-		allMessages, err = b.sessions.GetMessages(groupCtx, session)
+		allMessages, err = b.sessions.GetMessages(loadCtx, session)
+		trace.SetError(loadCtx, err)
 		return err
 	})
 	group.Go(func() error {
+		loadCtx, loadSpan := trace.StartSpan(groupCtx, "redis.summary")
+		defer loadSpan.End()
 		var err error
-		summary, err = b.sessions.GetSummary(groupCtx, session.ID)
+		summary, err = b.sessions.GetSummary(loadCtx, session.ID)
+		trace.SetError(loadCtx, err)
 		return err
 	})
 	group.Go(func() error {
@@ -205,6 +219,9 @@ func (b *ContextBuilder) compact(ctx context.Context, session *model.Session, su
 	}
 	if !saved {
 		return nil, nil, errSummaryChanged
+	}
+	if result.TokensBefore > 0 {
+		metrics.Default.ContextCompressionRatio.Observe(float64(result.TokensAfter) / float64(result.TokensBefore))
 	}
 	return &newSummary, active[cut:], nil
 }

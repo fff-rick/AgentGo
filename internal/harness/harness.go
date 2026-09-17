@@ -12,9 +12,11 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/agentcontext"
 	"github.com/enterprise/ai-agent-go/internal/agentloop"
 	"github.com/enterprise/ai-agent-go/internal/memory"
+	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/observe"
 	"github.com/enterprise/ai-agent-go/internal/tool"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 )
 
 const systemPrompt = `你是一个能够自主使用工具的智能助手。
@@ -90,7 +92,22 @@ func (h *AgentHarness) ValidateAllowedTools(names []string) error {
 	return h.tools.ValidateAllowedTools(names)
 }
 
-func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (*RunResult, error) {
+func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (runResult *RunResult, runErr error) {
+	ctx, span := trace.StartSpan(ctx, "agent.run")
+	defer func() { trace.Finish(span, runErr) }()
+	start := time.Now()
+	mode := "agent"
+	if req != nil && req.Mode == model.ExecutionModePlanner {
+		mode = "planner"
+	}
+	defer func() {
+		result := "success"
+		if runErr != nil {
+			result = "error"
+		}
+		metrics.Default.AgentRequests.WithLabelValues(mode, result).Inc()
+		metrics.Default.AgentDuration.WithLabelValues(mode).Observe(metrics.Seconds(start))
+	}()
 	if req == nil || req.Session == nil || req.Session.ID == "" || req.Message == "" {
 		return nil, fmt.Errorf("session 和 message 不能为空")
 	}
@@ -112,6 +129,7 @@ func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (*RunResult, er
 	if err != nil {
 		return nil, err
 	}
+	metrics.Default.ContextTokens.Observe(float64(agentContext.EstimatedTokens))
 	state := &agentloop.RunState{RunID: uuid.NewString(), UserID: session.UserID, SessionID: session.ID, Task: req.Message}
 	var loopResult *agentloop.Result
 	if req.Mode == model.ExecutionModePlanner {
@@ -152,7 +170,7 @@ func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (*RunResult, er
 		h.logger.Warn("保存助手消息失败", zap.Error(assistantSaveErr))
 	}
 	if userSaveErr == nil && assistantSaveErr == nil && h.precompactor != nil {
-		h.precompactor.Submit(session, agentContext.EstimatedTokens, agentContext.HistoryMessages, result.Answer)
+		h.precompactor.SubmitWithContext(ctx, session, agentContext.EstimatedTokens, agentContext.HistoryMessages, result.Answer)
 	}
 	if userSaveErr == nil && assistantSaveErr == nil && h.memoryJobs != nil {
 		enqueueCtx, cancel := context.WithTimeout(ctx, 2*time.Second)

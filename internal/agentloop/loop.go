@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/enterprise/ai-agent-go/internal/llm"
+	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/observe"
 	"github.com/enterprise/ai-agent-go/internal/tool"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 )
 
 const maxToolOutputRunes = 20000
@@ -59,7 +61,9 @@ func New(router *llm.Router, executor *tool.Router) *Loop {
 	return &Loop{router: router, executor: executor}
 }
 
-func (l *Loop) Run(ctx context.Context, input Input) (*Result, error) {
+func (l *Loop) Run(ctx context.Context, input Input) (runResult *Result, runErr error) {
+	ctx, span := trace.StartSpan(ctx, "agent.loop")
+	defer func() { trace.Finish(span, runErr) }()
 	if input.MaxIterations <= 0 {
 		return nil, fmt.Errorf("max iterations 必须大于 0")
 	}
@@ -81,6 +85,7 @@ func (l *Loop) Run(ctx context.Context, input Input) (*Result, error) {
 	}
 	activeTools := append([]model.ToolDef(nil), input.Tools...)
 	businessIterations, discoveryCalls, decisionCalls := 0, 0, 0
+	defer func() { metrics.Default.AgentIterations.WithLabelValues("agent").Observe(float64(businessIterations)) }()
 	for businessIterations < input.MaxIterations && decisionCalls < input.MaxIterations+maxDiscoveryCalls {
 		decisionCalls++
 		observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "agent_loop", Message: fmt.Sprintf("Agent 工具轮次 %d/%d，发现调用 %d/%d", businessIterations+1, input.MaxIterations, discoveryCalls, maxDiscoveryCalls)})

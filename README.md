@@ -79,7 +79,7 @@ pkg/common/                  # 公共工具包
 ### 本地开发
 
 ```bash
-# 首次使用可修改 .env；Compose 会启动 AgentGo、PostgreSQL、Redis、Milvus、etcd、MinIO
+# 首次使用可修改 .env；Compose 会启动 AgentGo、PostgreSQL、Redis、Milvus、etcd、MinIO、Prometheus、Grafana
 make docker-run
 curl http://localhost:8080/health
 
@@ -87,6 +87,12 @@ curl http://localhost:8080/health
 make docker-logs
 make docker-stop
 ```
+
+### Prometheus 与 Grafana
+
+服务启动后，指标可从 `http://localhost:8080/metrics` 获取；Prometheus 默认在 `http://localhost:9090`，Grafana 默认在 `http://localhost:3000`，首次登录使用 `admin/admin`（可通过 `GRAFANA_ADMIN_USER`、`GRAFANA_ADMIN_PASSWORD` 修改）。Grafana 会自动加载「AgentGo 指标总览」面板。这些端口默认仅绑定本机；若修改 `AGENTGO_BIND_HOST` 暴露应用端口，须同时限制 `/metrics` 的网络访问。流式 LLM 后端未报告 usage 时，token 指标不包含该次调用，面板通过「LLM 用量覆盖率」显示统计覆盖程度。
+
+Trace 由 OpenTelemetry 导出到 Tempo（默认 `http://localhost:3200`），可在 Grafana Explore 中选择 Tempo 并按响应头 `X-Trace-ID` 查询。原有 `X-Request-ID` 和响应 JSON 的 `trace_id` 仍是请求 ID；入站 `traceparent` 用于跨服务接续。Compose 默认全量采样，可用 `OTEL_TRACES_SAMPLER_ARG` 设置 0～1 的采样比例。span 不包含提示词、对话内容或工具输入输出；异步记忆与预压缩任务使用独立 Trace 链接来源请求。
 
 ### 可观察 TUI
 

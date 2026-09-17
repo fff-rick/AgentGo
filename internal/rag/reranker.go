@@ -10,6 +10,7 @@ import (
 
 	"github.com/enterprise/ai-agent-go/internal/llm"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 )
 
 // Reranker 重排序器。
@@ -46,6 +47,8 @@ type rerankScore struct {
 // Rerank 对检索结果进行重排序。
 // 将查询和所有候选文档一起发送给 LLM，由 LLM 评估相关性并重新排序。
 func (r *Reranker) Rerank(ctx context.Context, query string, refs []model.Reference) ([]model.Reference, error) {
+	ctx, span := trace.StartSpan(ctx, "rag.rerank")
+	defer span.End()
 	if len(refs) <= 1 {
 		return refs, nil
 	}
@@ -72,6 +75,7 @@ func (r *Reranker) Rerank(ctx context.Context, query string, refs []model.Refere
 
 	resp, err := r.router.Chat(ctx, req)
 	if err != nil {
+		trace.SetError(ctx, err)
 		r.logger.Warn("Rerank LLM 调用失败，返回原始排序", zap.Error(err))
 		return refs, nil
 	}
@@ -79,6 +83,7 @@ func (r *Reranker) Rerank(ctx context.Context, query string, refs []model.Refere
 	// 解析 LLM 返回的评分
 	var scores []rerankScore
 	if err := json.Unmarshal([]byte(resp.Content), &scores); err != nil {
+		trace.SetError(ctx, err)
 		r.logger.Warn("Rerank 结果解析失败，返回原始排序", zap.Error(err))
 		return refs, nil
 	}

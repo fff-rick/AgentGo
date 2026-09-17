@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/enterprise/ai-agent-go/internal/config"
+	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 	"github.com/enterprise/ai-agent-go/pkg/common"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Router 模型路由器。
@@ -52,7 +56,9 @@ func (r *Router) SetLogger(logger *zap.Logger) {
 // Chat 通过路由选择模型并发送对话请求。
 // 如果请求指定了模型则优先使用指定模型，否则按 priority 选择。
 // 当目标模型熔断时按 priority 自动降级到其他可用模型。
-func (r *Router) Chat(ctx context.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
+func (r *Router) Chat(ctx context.Context, req *model.LLMRequest) (response *model.LLMResponse, callErr error) {
+	ctx, span := trace.StartSpan(ctx, "llm.chat", attribute.Bool("llm.stream", false))
+	defer func() { trace.Finish(span, callErr) }()
 	client, err := r.selectClient(req.Model)
 	if err != nil {
 		return nil, err
@@ -72,8 +78,21 @@ func (r *Router) Chat(ctx context.Context, req *model.LLMRequest) (*model.LLMRes
 		breaker = r.getBreaker(fallback.Name())
 	}
 
+	modelName = client.Name()
+	span.SetAttributes(attribute.String("llm.model", modelName))
+	start := time.Now()
 	resp, err := client.Chat(ctx, req)
+	result := "success"
 	if err != nil {
+		result = "error"
+	}
+	metrics.Default.LLMRequests.WithLabelValues(modelName, "false", result).Inc()
+	metrics.Default.LLMDuration.WithLabelValues(modelName, "false").Observe(metrics.Seconds(start))
+	if err == nil && resp != nil && resp.Usage != nil {
+		recordUsage(modelName, "false", resp.Usage)
+	}
+	if err != nil {
+		metrics.Default.LLMErrors.WithLabelValues(modelName, "false").Inc()
 		breaker.RecordFailure()
 		return nil, common.WrapError(common.ErrCodeLLMFailed, "LLM 调用失败", err)
 	}
@@ -84,8 +103,10 @@ func (r *Router) Chat(ctx context.Context, req *model.LLMRequest) (*model.LLMRes
 
 // ChatStream 通过路由选择模型并发送流式对话请求
 func (r *Router) ChatStream(ctx context.Context, req *model.LLMRequest) (<-chan StreamEvent, error) {
+	ctx, span := trace.StartSpan(ctx, "llm.chat", attribute.Bool("llm.stream", true))
 	client, err := r.selectClient(req.Model)
 	if err != nil {
+		trace.Finish(span, err)
 		return nil, err
 	}
 
@@ -95,6 +116,7 @@ func (r *Router) ChatStream(ctx context.Context, req *model.LLMRequest) (<-chan 
 	if !breaker.Allow() {
 		fallback, fbErr := r.findFallback(modelName)
 		if fbErr != nil {
+			trace.Finish(span, fbErr)
 			return nil, common.ErrCircuitOpen(modelName)
 		}
 		r.log("模型 %s 熔断，降级到 %s", modelName, fallback.Name())
@@ -102,8 +124,15 @@ func (r *Router) ChatStream(ctx context.Context, req *model.LLMRequest) (<-chan 
 		breaker = r.getBreaker(fallback.Name())
 	}
 
+	modelName = client.Name()
+	span.SetAttributes(attribute.String("llm.model", modelName))
+	start := time.Now()
 	source, err := client.ChatStream(ctx, req)
 	if err != nil {
+		trace.Finish(span, err)
+		metrics.Default.LLMRequests.WithLabelValues(modelName, "true", "error").Inc()
+		metrics.Default.LLMDuration.WithLabelValues(modelName, "true").Observe(metrics.Seconds(start))
+		metrics.Default.LLMErrors.WithLabelValues(modelName, "true").Inc()
 		breaker.RecordFailure()
 		return nil, common.WrapError(common.ErrCodeLLMFailed, "LLM 流式调用失败", err)
 	}
@@ -111,19 +140,48 @@ func (r *Router) ChatStream(ctx context.Context, req *model.LLMRequest) (<-chan 
 	ch := make(chan StreamEvent, 32)
 	go func() {
 		defer close(ch)
+		var streamErr error
+		defer func() { trace.Finish(span, streamErr) }()
 		failed := false
+		first := false
+		var usage *model.UsageInfo
 		for event := range source {
+			if !first && (event.Content != "" || event.Reasoning != "") {
+				metrics.Default.LLMTTFT.WithLabelValues(modelName).Observe(metrics.Seconds(start))
+				first = true
+			}
+			if event.Usage != nil {
+				usage = event.Usage
+			}
 			if event.Err != nil && !failed {
+				streamErr = event.Err
 				breaker.RecordFailure()
 				failed = true
 			}
 			ch <- event
+		}
+		result := "success"
+		if failed {
+			result = "error"
+			metrics.Default.LLMErrors.WithLabelValues(modelName, "true").Inc()
+		}
+		metrics.Default.LLMRequests.WithLabelValues(modelName, "true", result).Inc()
+		metrics.Default.LLMDuration.WithLabelValues(modelName, "true").Observe(metrics.Seconds(start))
+		if usage != nil {
+			span.SetAttributes(attribute.Int("llm.prompt_tokens", usage.PromptTokens), attribute.Int("llm.completion_tokens", usage.CompletionTokens))
+			recordUsage(modelName, "true", usage)
 		}
 		if !failed {
 			breaker.RecordSuccess()
 		}
 	}()
 	return ch, nil
+}
+
+func recordUsage(modelName, stream string, usage *model.UsageInfo) {
+	metrics.Default.LLMUsageReports.WithLabelValues(modelName, stream).Inc()
+	metrics.Default.LLMPromptTokens.WithLabelValues(modelName).Add(float64(usage.PromptTokens))
+	metrics.Default.LLMCompletionTokens.WithLabelValues(modelName).Add(float64(usage.CompletionTokens))
 }
 
 // ListModels 返回所有已注册模型的名称和健康状态
