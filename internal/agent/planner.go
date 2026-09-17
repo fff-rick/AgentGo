@@ -10,9 +10,11 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/enterprise/ai-agent-go/internal/llm"
+	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/observe"
 	"github.com/enterprise/ai-agent-go/internal/tool"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 )
 
 const plannerSystemPrompt = `你是一个任务规划专家。请将用户的复杂任务分解为可执行的子步骤。
@@ -73,7 +75,15 @@ func NewPlannerAgent(router *llm.Router, toolRouter *tool.Router, logger *zap.Lo
 }
 
 // Execute 执行复杂任务：生成计划 → 逐步执行 → 汇总结果
-func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model.LLMMessage, scope tool.Scope) (*AgentResult, error) {
+func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model.LLMMessage, scope tool.Scope) (planResult *AgentResult, planErr error) {
+	ctx, span := trace.StartSpan(ctx, "agent.planner")
+	defer func() { trace.Finish(span, planErr) }()
+	start := time.Now()
+	steps := 0
+	defer func() {
+		metrics.Default.PlannerDuration.Observe(metrics.Seconds(start))
+		metrics.Default.PlannerSteps.Observe(float64(steps))
+	}()
 	definitions, err := p.planToolDefinitions(ctx, task, history, scope)
 	if err != nil {
 		return nil, fmt.Errorf("选择规划工具失败: %w", err)
@@ -95,6 +105,7 @@ func (p *PlannerAgent) Execute(ctx context.Context, task string, history []model
 	}
 
 	for _, step := range plan.Steps {
+		steps++
 		// 检查依赖是否满足
 		for _, dep := range step.DependsOn {
 			if _, ok := stepResults[dep]; !ok {

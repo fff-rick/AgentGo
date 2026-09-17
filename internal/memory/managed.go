@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 	"github.com/google/uuid"
 )
 
@@ -51,6 +53,7 @@ func NewManagedStore(ctx context.Context, db *sql.DB, vector *SemanticStore) (*M
  status text NOT NULL DEFAULT 'pending', last_error text NOT NULL DEFAULT '',
  created_at timestamptz NOT NULL DEFAULT now())`,
 		`ALTER TABLE memory_jobs ADD COLUMN IF NOT EXISTS lease_until timestamptz`,
+		`ALTER TABLE memory_jobs ADD COLUMN IF NOT EXISTS traceparent text NOT NULL DEFAULT ''`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS memory_extract_once_idx ON memory_jobs(message_id) WHERE kind='extract'`,
 		`CREATE INDEX IF NOT EXISTS memory_jobs_ready_idx ON memory_jobs(next_at) WHERE status='pending'`,
 	}
@@ -66,7 +69,13 @@ func normalizeTopic(topic string) string {
 	return strings.ToLower(strings.Join(strings.Fields(topic), " "))
 }
 
-func (s *ManagedStore) Save(ctx context.Context, item model.MemoryItem) error {
+func (s *ManagedStore) Save(ctx context.Context, item model.MemoryItem) (saveErr error) {
+	ctx, span := trace.StartSpan(ctx, "memory.save")
+	defer func() { trace.Finish(span, saveErr) }()
+	start := time.Now()
+	defer func() {
+		metrics.Default.MemoryWriteDuration.WithLabelValues("semantic").Observe(metrics.Seconds(start))
+	}()
 	if item.UserID == "" || item.Content == "" || item.SourceSessionID == "" || item.SourceMessageID == "" || !validMemoryKind(item.Kind) {
 		return errors.New("无效的长期记忆")
 	}
@@ -146,7 +155,7 @@ func (s *ManagedStore) Save(ctx context.Context, item model.MemoryItem) error {
 }
 
 func enqueueIndex(ctx context.Context, tx *sql.Tx, id, userID string, version int64) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO memory_jobs(id,kind,user_id,payload,target_version) VALUES($1,'index',$2,$3,$4)`, uuid.NewString(), userID, id, version)
+	_, err := tx.ExecContext(ctx, `INSERT INTO memory_jobs(id,kind,user_id,payload,target_version,traceparent) VALUES($1,'index',$2,$3,$4,$5)`, uuid.NewString(), userID, id, version, trace.TraceParent(ctx))
 	return err
 }
 
@@ -229,10 +238,16 @@ func (s *ManagedStore) Versions(ctx context.Context, userID, id string, limit, o
 	return versions, rows.Err()
 }
 
-func (s *ManagedStore) Search(ctx context.Context, userID, query string, topK int) ([]model.MemoryItem, error) {
+func (s *ManagedStore) Search(ctx context.Context, userID, query string, topK int) (itemsOut []model.MemoryItem, searchErr error) {
+	ctx, span := trace.StartSpan(ctx, "memory.search")
+	defer func() { trace.Finish(span, searchErr) }()
+	metrics.Default.MemoryRetrieval.Inc()
 	items, err := s.FindSimilar(ctx, userID, query, topK)
 	if err != nil {
 		return nil, err
+	}
+	if len(items) > 0 {
+		metrics.Default.MemoryRetrievalHits.Inc()
 	}
 	ids := make([]string, 0, len(items))
 	for _, item := range items {

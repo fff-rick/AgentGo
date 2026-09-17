@@ -16,6 +16,8 @@ import (
 	"github.com/milvus-io/milvus/client/v2/milvusclient"
 
 	"github.com/enterprise/ai-agent-go/internal/config"
+	"github.com/enterprise/ai-agent-go/internal/metrics"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 )
 
 const (
@@ -99,7 +101,13 @@ func NewMilvusClient(cfg config.MilvusConfig) (*MilvusClient, error) {
 	return c, nil
 }
 
-func (c *MilvusClient) Insert(ctx context.Context, collectionName string, records []VectorRecord) error {
+func (c *MilvusClient) Insert(ctx context.Context, collectionName string, records []VectorRecord) (insertErr error) {
+	ctx, span := trace.StartSpan(ctx, "milvus.insert")
+	defer func() { trace.Finish(span, insertErr) }()
+	start := time.Now()
+	defer func() {
+		metrics.Default.DependencyDuration.WithLabelValues("milvus", "insert").Observe(metrics.Seconds(start))
+	}()
 	if len(records) == 0 {
 		return nil
 	}
@@ -150,7 +158,13 @@ func (c *MilvusClient) Search(ctx context.Context, collectionName string, vector
 }
 
 // SearchWithFilter 在 Milvus 服务端应用标量过滤，避免跨用户召回后再本地过滤。
-func (c *MilvusClient) SearchWithFilter(ctx context.Context, collectionName string, vector []float32, topK int, filter string) ([]SearchResult, error) {
+func (c *MilvusClient) SearchWithFilter(ctx context.Context, collectionName string, vector []float32, topK int, filter string) (resultsOut []SearchResult, searchErr error) {
+	ctx, span := trace.StartSpan(ctx, "milvus.search")
+	defer func() { trace.Finish(span, searchErr) }()
+	start := time.Now()
+	defer func() {
+		metrics.Default.DependencyDuration.WithLabelValues("milvus", "search").Observe(metrics.Seconds(start))
+	}()
 	if len(vector) != c.dimension {
 		return nil, fmt.Errorf("查询向量维度为 %d，期望 %d", len(vector), c.dimension)
 	}
@@ -206,7 +220,13 @@ func (c *MilvusClient) SearchWithFilter(ctx context.Context, collectionName stri
 	return results, nil
 }
 
-func (c *MilvusClient) Delete(ctx context.Context, collectionName string, ids []string) error {
+func (c *MilvusClient) Delete(ctx context.Context, collectionName string, ids []string) (deleteErr error) {
+	ctx, span := trace.StartSpan(ctx, "milvus.delete")
+	defer func() { trace.Finish(span, deleteErr) }()
+	start := time.Now()
+	defer func() {
+		metrics.Default.DependencyDuration.WithLabelValues("milvus", "delete").Observe(metrics.Seconds(start))
+	}()
 	if len(ids) == 0 {
 		return nil
 	}

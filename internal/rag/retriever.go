@@ -13,6 +13,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/cache"
 	"github.com/enterprise/ai-agent-go/internal/embedding"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 	"github.com/enterprise/ai-agent-go/internal/vectordb"
 )
 
@@ -71,7 +72,9 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, topK int) ([]mod
 }
 
 // RetrieveWithMode 使用指定模式执行检索
-func (r *Retriever) RetrieveWithMode(ctx context.Context, query string, topK int, mode RetrievalMode) ([]model.Reference, error) {
+func (r *Retriever) RetrieveWithMode(ctx context.Context, query string, topK int, mode RetrievalMode) (references []model.Reference, retrieveErr error) {
+	ctx, span := trace.StartSpan(ctx, "rag.retrieve")
+	defer func() { trace.Finish(span, retrieveErr) }()
 	switch mode {
 	case ModeVector:
 		return r.vectorSearch(ctx, query, topK)

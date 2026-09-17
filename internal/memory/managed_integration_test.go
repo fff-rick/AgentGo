@@ -10,8 +10,13 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/config"
 	"github.com/enterprise/ai-agent-go/internal/database"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 	"github.com/enterprise/ai-agent-go/internal/vectordb"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 func TestManagedMemoryPostgresIntegration(t *testing.T) {
@@ -43,14 +48,24 @@ func TestManagedMemoryPostgresIntegration(t *testing.T) {
 	}
 	runner := NewJobRunner(store, nil, nil)
 	defer runner.Close(context.Background())
+	provider := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(provider)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		otel.SetTracerProvider(oteltrace.NewNoopTracerProvider())
+	})
+	traceCtx, requestSpan := trace.StartServerSpan(ctx, "test.enqueue")
 	messageID := uuid.NewString()
 	for range 2 {
-		if err := runner.Enqueue(ctx, userID, "s", messageID, "我喜欢浅色主题", time.Now()); err != nil {
+		if err := runner.Enqueue(traceCtx, userID, "s", messageID, "我喜欢浅色主题", time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
+	requestSpan.End()
 	var queued int
-	if err := client.DB().QueryRowContext(ctx, `SELECT count(*) FROM memory_jobs WHERE user_id=$1 AND kind='extract' AND message_id=$2`, userID, messageID).Scan(&queued); err != nil || queued != 1 {
+	var parent string
+	if err := client.DB().QueryRowContext(ctx, `SELECT count(*),max(traceparent) FROM memory_jobs WHERE user_id=$1 AND kind='extract' AND message_id=$2`, userID, messageID).Scan(&queued, &parent); err != nil || queued != 1 || trace.SpanContextFromTraceParent(parent).TraceID() != requestSpan.SpanContext().TraceID() {
 		t.Fatalf("queued=%d err=%v", queued, err)
 	}
 	base := time.Now().Add(-time.Hour)

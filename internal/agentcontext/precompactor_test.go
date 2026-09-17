@@ -13,6 +13,12 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/config"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/trace"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 type precompactSessions struct {
@@ -69,6 +75,46 @@ func newPrecompactTestBuilder(compactor Compactor) (*ContextBuilder, *precompact
 		sessions.messages = append(sessions.messages, model.Message{SessionID: "session", Sequence: sequence, Role: "user", Content: "message"})
 	}
 	return NewBuilder(sessions, semanticMemoryStub{}, compactor, config.ContextConfig{MaxInputTokens: 100, RecentMessages: 20, SummaryMaxTokens: 20}, 5, zap.NewNop()), sessions
+}
+
+func TestPrecompactorStartsLinkedTrace(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	otel.SetTracerProvider(provider)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		otel.SetTracerProvider(oteltrace.NewNoopTracerProvider())
+	})
+	release := make(chan struct{})
+	compactor := &waitingCompactor{started: make(chan string, 1), release: release}
+	builder, _ := newPrecompactTestBuilder(compactor)
+	p := NewPrecompactor(builder)
+	requestCtx, requestSpan := trace.StartServerSpan(context.Background(), "chat")
+	if !p.SubmitWithContext(requestCtx, &model.Session{ID: "session", UserID: "user-1"}, 70, 25, "answer") {
+		t.Fatal("job not accepted")
+	}
+	requestSpan.End()
+	select {
+	case <-compactor.started:
+	case <-time.After(time.Second):
+		t.Fatal("job not started")
+	}
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var linked bool
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "memory.precompact" {
+			linked = len(span.Links) == 1 && span.Links[0].SpanContext.SpanID() == requestSpan.SpanContext().SpanID() && span.SpanContext.TraceID() != requestSpan.SpanContext().TraceID()
+		}
+	}
+	if !linked {
+		t.Fatal("precompaction trace is not linked to request")
+	}
 }
 
 func TestPrecompactorThresholdDedupAndNextBuild(t *testing.T) {

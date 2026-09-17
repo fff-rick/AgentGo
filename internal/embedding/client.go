@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/enterprise/ai-agent-go/internal/config"
+	"github.com/enterprise/ai-agent-go/internal/metrics"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 )
 
 // Client converts text into dense vectors.
@@ -80,7 +82,11 @@ func (c *OllamaClient) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 	return result, nil
 }
 
-func (c *OllamaClient) embed(ctx context.Context, texts []string) ([][]float32, error) {
+func (c *OllamaClient) embed(ctx context.Context, texts []string) (vectors [][]float32, embedErr error) {
+	ctx, span := trace.StartSpan(ctx, "embedding")
+	defer func() { trace.Finish(span, embedErr) }()
+	start := time.Now()
+	defer func() { metrics.Default.EmbeddingDuration.WithLabelValues("batch").Observe(metrics.Seconds(start)) }()
 	for i, text := range texts {
 		if strings.TrimSpace(text) == "" {
 			return nil, fmt.Errorf("embedding input %d 不能为空", i)

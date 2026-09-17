@@ -39,8 +39,9 @@ type StreamEvent struct {
 	Content   string // 文本内容增量
 	Reasoning string // 模型显式返回的 reasoning_content/reasoning/thinking
 	ToolCalls []model.LLMToolCall
-	Done      bool  // 是否结束
-	Err       error // 错误信息
+	Usage     *model.UsageInfo // 仅后端实际返回时设置
+	Done      bool             // 是否结束
+	Err       error            // 错误信息
 }
 
 // HTTPClient 基于 HTTP 的 LLM 客户端实现（兼容 OpenAI API 格式）
@@ -102,6 +103,9 @@ func (c *HTTPClient) readSDKStream(ctx context.Context, params openai.ChatComple
 	acc := openai.ChatCompletionAccumulator{}
 	for stream.Next() {
 		chunk := stream.Current()
+		if chunk.JSON.Usage.Valid() {
+			ch <- StreamEvent{Usage: &model.UsageInfo{PromptTokens: int(chunk.Usage.PromptTokens), CompletionTokens: int(chunk.Usage.CompletionTokens), TotalTokens: int(chunk.Usage.TotalTokens)}}
+		}
 		if !acc.AddChunk(chunk) {
 			ch <- StreamEvent{Err: fmt.Errorf("无法合并 LLM 流式响应")}
 			return
@@ -218,8 +222,10 @@ func completionToResponse(completion *openai.ChatCompletion) *model.LLMResponse 
 		result.Content = completion.Choices[0].Message.Content
 		result.ToolCalls = convertToolCalls(completion.Choices[0].Message.ToolCalls)
 	}
-	result.Usage = &model.UsageInfo{
-		PromptTokens: int(completion.Usage.PromptTokens), CompletionTokens: int(completion.Usage.CompletionTokens), TotalTokens: int(completion.Usage.TotalTokens),
+	if completion.JSON.Usage.Valid() {
+		result.Usage = &model.UsageInfo{
+			PromptTokens: int(completion.Usage.PromptTokens), CompletionTokens: int(completion.Usage.CompletionTokens), TotalTokens: int(completion.Usage.TotalTokens),
+		}
 	}
 	return result
 }

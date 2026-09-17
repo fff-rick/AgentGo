@@ -12,7 +12,9 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/enterprise/ai-agent-go/internal/config"
+	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 )
 
 // Client owns the shared PostgreSQL connection pool used by RAG and tools.
@@ -270,7 +272,13 @@ func termCount(terms map[string]int) int {
 }
 
 // Search segments the query and ranks matching chunks with BM25 (k1=1.2, b=0.75).
-func (c *Client) Search(ctx context.Context, query string, topK int) ([]model.Reference, error) {
+func (c *Client) Search(ctx context.Context, query string, topK int) (references []model.Reference, searchErr error) {
+	ctx, span := trace.StartSpan(ctx, "postgres.keyword_search")
+	defer func() { trace.Finish(span, searchErr) }()
+	start := time.Now()
+	defer func() {
+		metrics.Default.DependencyDuration.WithLabelValues("postgres", "keyword_search").Observe(metrics.Seconds(start))
+	}()
 	if topK <= 0 {
 		return nil, fmt.Errorf("topK 必须大于 0")
 	}

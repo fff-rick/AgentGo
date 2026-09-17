@@ -18,6 +18,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/observe"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 	"github.com/enterprise/ai-agent-go/pkg/common"
 )
 
@@ -75,6 +76,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	resp, err := h.orchestrator.ProcessMessage(ctx, &req, session)
 	if err != nil {
 		h.logger.Error("对话处理失败", zap.Error(err))
+		trace.SetError(ctx, err)
 		h.writeChatError(c, err)
 		return
 	}
@@ -138,6 +140,7 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 	})
 	resp, err := h.orchestrator.ProcessMessage(ctx, &req, session)
 	if err != nil {
+		trace.SetError(ctx, err)
 		h.writeSSE(c.Writer, "error", map[string]string{"error": err.Error()})
 		flusher.Flush()
 		return

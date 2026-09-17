@@ -8,8 +8,11 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/enterprise/ai-agent-go/internal/config"
+	"github.com/enterprise/ai-agent-go/internal/metrics"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 )
 
 // Cache 缓存操作接口
@@ -48,6 +51,7 @@ func NewRedisCache(cfg config.RedisConfig) (*RedisCache, error) {
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 	})
+	client.AddHook(redisMetricsHook{})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -57,6 +61,46 @@ func NewRedisCache(cfg config.RedisConfig) (*RedisCache, error) {
 	}
 
 	return &RedisCache{client: client}, nil
+}
+
+type redisMetricsHook struct{}
+type redisStartKey struct{}
+
+func (redisMetricsHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
+	ctx, _ = trace.StartSpan(ctx, "redis."+redisOperation(cmd.Name()))
+	return context.WithValue(ctx, redisStartKey{}, time.Now()), nil
+}
+func (redisMetricsHook) AfterProcess(ctx context.Context, cmd redis.Cmder) error {
+	if start, ok := ctx.Value(redisStartKey{}).(time.Time); ok {
+		op := redisOperation(cmd.Name())
+		metrics.Default.DependencyDuration.WithLabelValues("redis", op).Observe(metrics.Seconds(start))
+	}
+	err := cmd.Err()
+	if err == redis.Nil {
+		err = nil
+	}
+	trace.Finish(oteltrace.SpanFromContext(ctx), err)
+	return nil
+}
+func (redisMetricsHook) BeforeProcessPipeline(ctx context.Context, _ []redis.Cmder) (context.Context, error) {
+	ctx, _ = trace.StartSpan(ctx, "redis.pipeline")
+	return context.WithValue(ctx, redisStartKey{}, time.Now()), nil
+}
+func (redisMetricsHook) AfterProcessPipeline(ctx context.Context, _ []redis.Cmder) error {
+	if start, ok := ctx.Value(redisStartKey{}).(time.Time); ok {
+		metrics.Default.DependencyDuration.WithLabelValues("redis", "pipeline").Observe(metrics.Seconds(start))
+	}
+	oteltrace.SpanFromContext(ctx).End()
+	return nil
+}
+
+func redisOperation(name string) string {
+	switch name {
+	case "get", "set", "del", "exists", "lpush", "lrange", "ltrim", "expire", "incr", "eval", "evalsha", "ping":
+		return name
+	default:
+		return "other"
+	}
 }
 
 // Get 获取缓存值

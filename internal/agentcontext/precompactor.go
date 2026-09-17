@@ -9,13 +9,19 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 )
+
+type precompactJob struct {
+	session     model.Session
+	traceparent string
+}
 
 // Precompactor performs best-effort summary updates outside the response path.
 // ponytail: process-local queue can lose work on crash; use a durable queue if summaries must survive restart.
 type Precompactor struct {
 	builder *ContextBuilder
-	jobs    chan model.Session
+	jobs    chan precompactJob
 	ctx     context.Context
 	cancel  context.CancelFunc
 	mu      sync.Mutex
@@ -27,7 +33,7 @@ type Precompactor struct {
 func NewPrecompactor(builder *ContextBuilder) *Precompactor {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &Precompactor{
-		builder: builder, jobs: make(chan model.Session, 16), ctx: ctx, cancel: cancel,
+		builder: builder, jobs: make(chan precompactJob, 16), ctx: ctx, cancel: cancel,
 		pending: make(map[string]struct{}), done: make(chan struct{}),
 	}
 	var workers sync.WaitGroup
@@ -35,13 +41,16 @@ func NewPrecompactor(builder *ContextBuilder) *Precompactor {
 	for range 2 {
 		go func() {
 			defer workers.Done()
-			for session := range p.jobs {
+			for job := range p.jobs {
 				func() {
-					defer p.finished(session.ID)
+					defer p.finished(job.session.ID)
 					ctx, cancel := context.WithTimeout(p.ctx, time.Minute)
 					defer cancel()
-					if err := p.builder.precompact(ctx, &session); err != nil && !errors.Is(err, errSummaryChanged) && !errors.Is(err, errMessageGap) {
-						p.builder.logger.Warn("后台会话摘要压缩失败", zap.String("session_id", session.ID), zap.Error(err))
+					ctx, span := trace.StartLinked(ctx, "memory.precompact", job.traceparent)
+					err := p.builder.precompact(ctx, &job.session)
+					trace.Finish(span, err)
+					if err != nil && !errors.Is(err, errSummaryChanged) && !errors.Is(err, errMessageGap) {
+						p.builder.logger.Warn("后台会话摘要压缩失败", zap.String("session_id", job.session.ID), zap.Error(err))
 					}
 				}()
 			}
@@ -52,6 +61,10 @@ func NewPrecompactor(builder *ContextBuilder) *Precompactor {
 }
 
 func (p *Precompactor) Submit(session *model.Session, estimatedTokens, historyMessages int, answer string) bool {
+	return p.SubmitWithContext(context.Background(), session, estimatedTokens, historyMessages, answer)
+}
+
+func (p *Precompactor) SubmitWithContext(ctx context.Context, session *model.Session, estimatedTokens, historyMessages int, answer string) bool {
 	if session == nil || session.ID == "" || historyMessages+2 <= p.builder.cfg.RecentMessages ||
 		(estimatedTokens+estimateText(answer))*10 < p.builder.cfg.MaxInputTokens*7 {
 		return false
@@ -66,7 +79,7 @@ func (p *Precompactor) Submit(session *model.Session, estimatedTokens, historyMe
 	}
 	copy := *session
 	select {
-	case p.jobs <- copy:
+	case p.jobs <- precompactJob{session: copy, traceparent: trace.TraceParent(ctx)}:
 		p.pending[session.ID] = struct{}{}
 		return true
 	default:

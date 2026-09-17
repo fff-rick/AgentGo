@@ -66,11 +66,51 @@ func TestSDKStreamAccumulatesNativeToolCall(t *testing.T) {
 			t.Fatal(event.Err)
 		}
 		reasoning += event.Reasoning
+		if event.Usage != nil {
+			t.Fatalf("unexpected usage: %+v", event.Usage)
+		}
 		if len(event.ToolCalls) > 0 {
 			calls = event.ToolCalls
 		}
 	}
 	if reasoning != "思考" || len(calls) != 1 || calls[0].Function.Name != "calculator" || calls[0].Function.Arguments != `{"operation":"add"}` {
 		t.Fatalf("reasoning=%q calls=%+v", reasoning, calls)
+	}
+}
+
+func TestSDKStreamPreservesProviderReportedUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if _, exists := request["stream_options"]; exists {
+			t.Error("stream options must remain compatible with existing backends")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintln(w, `data: {"id":"chat-1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`)
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, `data: {"id":"chat-1","object":"chat.completion.chunk","created":1,"model":"test","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}`)
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "data: [DONE]")
+		fmt.Fprintln(w)
+	}))
+	defer server.Close()
+	client := NewHTTPClient(config.ModelConfig{Name: "test", Model: "test", BaseURL: server.URL, APIKey: "test"}, 5*time.Second)
+	stream, err := client.ChatStream(context.Background(), &model.LLMRequest{Messages: []model.LLMMessage{{Role: "user", Content: "hello"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var usage *model.UsageInfo
+	for event := range stream {
+		if event.Err != nil {
+			t.Fatal(event.Err)
+		}
+		if event.Usage != nil {
+			usage = event.Usage
+		}
+	}
+	if usage == nil || usage.PromptTokens != 12 || usage.CompletionTokens != 3 {
+		t.Fatalf("usage=%+v", usage)
 	}
 }

@@ -11,7 +11,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/enterprise/ai-agent-go/internal/cache"
+	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/trace"
 	"github.com/enterprise/ai-agent-go/internal/user"
 )
 
@@ -87,7 +89,13 @@ func (m *RedisSessionManager) GetUser(ctx context.Context, userID string) (*mode
 	return m.users.Get(ctx, userID)
 }
 
-func (m *RedisSessionManager) AppendMessage(ctx context.Context, session *model.Session, message model.Message) error {
+func (m *RedisSessionManager) AppendMessage(ctx context.Context, session *model.Session, message model.Message) (writeErr error) {
+	ctx, span := trace.StartSpan(ctx, "memory.save")
+	defer func() { trace.Finish(span, writeErr) }()
+	start := time.Now()
+	defer func() {
+		metrics.Default.MemoryWriteDuration.WithLabelValues("session_message").Observe(metrics.Seconds(start))
+	}()
 	sessionID, err := validSessionID(session)
 	if err != nil {
 		return err
