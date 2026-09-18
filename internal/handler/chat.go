@@ -16,6 +16,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/agentcontext"
 	"github.com/enterprise/ai-agent-go/internal/auth"
 	"github.com/enterprise/ai-agent-go/internal/memory"
+	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/observe"
 	"github.com/enterprise/ai-agent-go/internal/trace"
@@ -129,6 +130,17 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 		common.FailWithCode(c, http.StatusInternalServerError, common.ErrCodeInternal, "不支持流式响应")
 		return
 	}
+	// A stream can fail after HTTP 200; count the terminal event separately.
+	result := "error"
+	// Metrics are collected after the handler returns, including client cancellation.
+	metrics.Default.SSEConnections.Inc()
+	defer func() {
+		metrics.Default.SSEConnections.Dec()
+		if ctx.Err() != nil {
+			result = "disconnected"
+		}
+		metrics.Default.SSEOutcomes.WithLabelValues(result).Inc()
+	}()
 
 	// 发送会话 ID
 	h.writeSSE(c.Writer, "session", map[string]string{"session_id": req.SessionID})
@@ -150,6 +162,7 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 	resp.MessageID = uuid.New().String()
 	h.writeSSE(c.Writer, "done", resp)
 	flusher.Flush()
+	result = "done"
 }
 
 func validExecutionMode(options *model.ChatOptions) bool {

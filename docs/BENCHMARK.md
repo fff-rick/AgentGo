@@ -40,7 +40,7 @@ go test -run '^$' -bench . -benchmem -count 10 ./... > new.txt
 benchstat old.txt new.txt
 ```
 
-在同一台空闲机器上运行；预热后至少采样 10 次。任一热点 `ns/op` 回退超过 10% 或 `allocs/op` 回退超过 15% 时需要解释或阻断合并。
+在同一台空闲机器上运行；预热后至少采样 10 次。本轮只记录 `ns/op` 与 `allocs/op` 基线，不设置统一阻断阈值。
 
 ### 2.2 黑盒端到端评测
 
@@ -116,12 +116,12 @@ Runner 输出 HTTP/业务成功率、任务通过率、工具准确率、检索 
 
 - **Task Pass Rate** = 全部断言通过的任务数 / 总任务数。
 - **Tool Accuracy** = 调用了正确工具的工具任务数 / 工具任务数。
-- **Intent Macro-F1 / Route Accuracy**：分别衡量四类意图的均衡分类效果，以及实际进入的处理路径是否正确。当前公开响应不暴露 intent/route，只能先以端到端任务通过率间接覆盖，不能据此宣称意图准确率。
+- **Intent Macro-F1 / Route Accuracy**：意图识别器当前未接入默认 Agent 执行链；使用 `cmd/benchmark-intent` 单独测识别器 Macro-F1，端到端任务通过率不得称为意图准确率。默认 Agent 的路径选择仍需单独证据。
 - **Function Calling**：记录参数准确率、并行调用正确率、强制工具遵循率、平均工具调用次数和 iteration-limit rate；HTTP 响应中的 `steps` 可用于回放执行链路。
 
 ### RAG
 
-- Retrieval：Recall@5 为主门禁，同时记录 MRR@10、nDCG@10。
+- Retrieval：分别记录各模式的 Recall@K、Precision@K、MRR@K、nDCG@K，首轮不设门禁。
 - Generation：答案正确性、引用准确率、引用完整率、无答案拒答准确率。
 - 忠实性必须人工或固定 judge 评价；关键词命中不能替代事实一致性评估。
 
@@ -131,31 +131,63 @@ Runner 输出 HTTP/业务成功率、任务通过率、工具准确率、检索 
 - 流式：TTFT、token 间隔、完整响应时间。普通对话、RAG 生成和 Function Calling 最终答案均直接转发模型流式增量。
 - 资源：CPU、RSS、goroutine、GC pause、Redis/Milvus/LLM 连接池。
 - 故障注入：模型 429/500/超时、Redis/Milvus 不可用、工具超时。记录降级成功率、熔断开启时间和恢复时间。
-- 成本：输入/输出 token、模型费用、工具费用，以及 **cost per passed task**。
+- 资源用量：记录供应商提供的输入/输出 token 及 usage 覆盖率；货币费用与 cost per passed task 暂缓。
 
-## 5. 建议发布门禁
+## 5. 基线阶段
 
-先连续记录 5 次稳定基线，再启用门禁。初始建议：
+本轮分别记录固定桩和真实模型的性能、效果、资源与故障结果。统一阈值、货币成本和发布门禁待稳定基线及正式数据集确定后再设计。
 
-| 指标 | 门禁 |
-|---|---:|
-| HTTP/业务成功率 | >= 99.5% |
-| 总 Task Pass Rate | >= 90%，且不低于基线 2 个百分点 |
-| Tool Accuracy | >= 95% |
-| RAG Recall@5 | >= 90% |
-| RAG 引用准确率 | >= 95% |
-| P95 延迟 | 不高于 SLO，且不比基线回退 10% |
-| cost per passed task | 不比基线回退 10% |
-| 安全关键用例 | 100% 通过 |
+## 6. 当前实现边界
 
-不要把本表直接当作当前项目已经达到的数值；它是建立首轮基线后的候选门槛。
+示例语料只检验评测链路。正式数据集审核、24 小时 Soak、货币成本和发布门禁暂缓。意图识别器、检索器与默认 Agent 路径分别报告；固定桩容量与真实模型效果分别报告。
 
-## 6. 当前实现边界与推进顺序
+## 7. 本地隔离实验
 
-Milvus、Ollama embedding、PostgreSQL 中文分词/BM25、真实搜索、只读数据库工具和 SSE 流式输出均已接入；当前主要缺口是正式 Golden Dataset、成本指标和故障注入基线。因此建议按以下顺序推进：
+当前实现增加了独立 Compose project，固定桩和真实模型使用不同 project 与端口。Compose project 名也隔离了 PostgreSQL、Redis、etcd、MinIO、Milvus、Prometheus、Tempo 和 Grafana 的数据卷。以下命令在仓库根目录运行：
 
-1. 立即在 CI 运行离线微基准和 smoke runner。
-2. 冻结 RAG 语料快照并为 BM25 与混合检索启用 Recall/MRR/nDCG 门禁。
-3. 补齐 token usage、模型名、Agent iterations、intent 和降级原因的响应/trace 字段，使成本和路由评测可观测。
-4. 为现有流式调用补充 TTFT 门禁。
-5. 在预发进行 1/5/20/50 并发阶梯压测及故障注入，不在共享生产环境直接压测。
+```bash
+# 固定桩：AgentGo 18080、Prometheus 19090、桩管理端口 18088、TCP 故障代理 18099
+sh benchmarks/compose.sh up -d --build
+BENCH_URL=http://localhost:18080 sh benchmarks/seed.sh
+go run ./cmd/benchmark -base-url http://localhost:18080 \
+  -dataset benchmarks/datasets/full.example.jsonl -backend stub -scenario full-example \
+  -corpus benchmarks/datasets/corpus.example.jsonl \
+  -model benchmark-primary -config-version benchmarks/config.stub.yaml \
+  -output benchmarks/reports/stub-full.json
+go run ./cmd/benchmark-sse -base-url http://localhost:18080 -backend stub \
+  -count 20 -concurrency 5 -output benchmarks/reports/stub-sse.json
+go run ./cmd/benchmark-sse -base-url http://localhost:18080 -backend stub \
+  -count 10 -concurrency 5 -slow-read 200ms
+bash benchmarks/slow-client.sh # 固定 300 个流式增量，比较正常与慢客户端
+```
+
+真实模型运行 `sh benchmarks/compose-real.sh up -d --build`，服务端口为 `18081`。该环境使用 `benchmarks/config.real-gpt.yaml` 和 `.env` 中的 GPT-5.5 凭据，工具决策也由 GPT-5.5 完成；Benchmark Compose 将后台记忆提取超时设为 60 秒。先确认模型与 Embedding 可用，再以 `-backend real`、`-base-url http://localhost:18081` 跑少量效果用例。不要混合固定桩与真实模型的容量结果。两个 Compose project 可分别用对应脚本加 `down` 停止；要清空测试数据卷时显式加 `-v`。
+
+### 指标口径
+
+- `cmd/benchmark` 把 HTTP 2xx、业务码 0、全部断言通过分别记为 `http_success_rate`、`success_rate`、`task_pass_rate`。预期的故障 HTTP 状态可以通过 `expected_status` 断言通过，但仍计入 HTTP/业务失败。
+- Runner 支持 `tool`、`tools_exact`（只比较业务工具，忽略内部 `list_tools` 调用）、`tool_args`（JSON 对象子集）、`max_tool_calls`、`min/max_planner_steps`、`planner_step_keywords`、`max_iterations`、`reference_titles` 或 `reference_doc_ids`、`reference_order`、`isolation_probe` 和 `isolation_forbidden`。`new_session_at` 与 `turn_delay_ms` 可构造跨会话长期记忆用例。用户隔离用例必须在 OIDC 环境提供属于另一个用户的 `AGENTGO_ISOLATION_ACCESS_TOKEN`；同一用户的新会话允许召回长期记忆。逐用例报告包含 Trace ID、状态码、工具调用、引用 ID、usage 与失败原因。
+- HTTP Runner 的引用排名指标针对**答案返回的引用**；`cmd/benchmark-retrieval` 直接调用检索器，分别报告 vector、keyword、hybrid 模式的 Recall@K、Precision@K、MRR@K、nDCG@K。二者不能互换。固定语料为 `benchmarks/datasets/corpus.example.jsonl`，标题经 `etl.DocumentID` 得到稳定 ID。
+- `cmd/benchmark-sse` 逐事件读取 `answer_delta`、`error`、`done`。TTFT 是请求开始到首个非空 `answer_delta`；增量输出速率按字符数计算。只有 `done.usage` 含供应商上报的 completion tokens 时才给出 Agent Loop 的 completion tokens / 请求总耗时；上下文压缩、Planner 和后台记忆调用不计入这份 usage。缺失值在 `unavailable` 中标记。
+- JSON 报告记录提交 SHA、数据集 SHA、backend、场景、模型、非敏感参数/配置版本和机器信息。真实凭据不要传入元数据参数。当前不计算货币成本、不设发布门禁。
+
+### 检索、意图与负载
+
+检索命令需要从宿主机连接本地测试库；固定桩环境可在加载 `.env` 后覆盖 `APP_POSTGRES_PORT=15432`、`APP_MILVUS_ADDR=localhost:19531`、`APP_EMBEDDING_API_KEY=stub`、`APP_EMBEDDING_BASE_URL=http://localhost:18088/v1`、`APP_EMBEDDING_MODEL=benchmark-stub`，然后运行 `go run ./cmd/benchmark-retrieval -backend stub`。意图识别器**不在默认 Agent 执行路径**；固定桩环境使用 `BENCH_STUB_BASE_URL=http://localhost:18088 go run ./cmd/benchmark-intent -config benchmarks/config.stub.yaml -backend stub`，读取 `intent.example.jsonl` 并报告 Macro-F1。真实模型环境可直接运行 `go run ./cmd/benchmark-intent`。
+
+```bash
+bash benchmarks/run-k6.sh baseline
+bash benchmarks/run-k6.sh load
+bash benchmarks/run-k6.sh stream
+bash benchmarks/run-k6.sh stress
+sh benchmarks/resources.sh
+bash benchmarks/resources-series.sh 300 # 压测期间每 5 秒记录一次资源快照
+```
+
+k6 的 SSE 请求只反映整条流的完成时间；TTFT 和断连行为使用 Go SSE 客户端。`resources.sh` 从 Prometheus 取 CPU、RSS、goroutine、GC、Redis/Milvus/Embedding 延迟，并从 Docker 取网络 I/O 快照。压力拐点应结合错误率、P95/P99 和资源曲线判断，不按单次最大 QPS 定义稳定容量。
+
+### 故障实验
+
+`bash benchmarks/fault.sh SCENARIO` 为每个场景输出注入前、注入中、恢复后三份报告；脚本退出时会重置代理。支持 `llm_429`、`llm_500`、`llm_timeout`、`invalid_tool`、`embedding_timeout`、`search_500`、`tool_timeout`、`redis_drop`、`milvus_drop`、`sse_disconnect`、`context_limit`。桩的 `/admin/stats` 请求计数写入汇总，可用于观察实际重试次数。在 Grafana/Tempo 对照 Trace ID 与 `agentgo_llm_circuit_open_total`、`agentgo_llm_fallbacks_total`、`agentgo_dependency_errors_total`、`agentgo_sse_outcomes_total`，记录真实恢复结果。HTTP 500 或任务失败是实验观察结果，不等于自动判定系统具有重试或降级能力。
+
+示例数据仅验证链路，不能当正式效果基线。24 小时 Soak、经审核的 Golden Dataset、货币成本与发布门禁在本轮范围外。

@@ -1,0 +1,2 @@
+{"title":"AgentGo 检索说明","content":"AgentGo 使用 Milvus 向量检索和 PostgreSQL BM25 关键词检索，采用 RRF 融合结果。","content_type":"text"}
+{"title":"AgentGo 工具说明","content":"AgentGo 提供 calculator、web_search、database_query 和 knowledge_search 工具。","content_type":"text"}

@@ -69,3 +69,25 @@ func BenchmarkRouterExecute(b *testing.B) {
 		}
 	})
 }
+
+func BenchmarkRouterBatchExecute(b *testing.B) {
+	r := NewRegistry()
+	r.MustRegister(benchmarkTool{name: "noop"})
+	router := NewRouter(r, zap.NewNop())
+	for _, size := range []int{1, 4, 16} {
+		b.Run(fmt.Sprintf("calls-%d", size), func(b *testing.B) {
+			calls := make([]ToolCall, size)
+			for i := range calls {
+				calls[i] = ToolCall{Name: "noop", Input: `{}`}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				results := router.BatchExecute(context.Background(), calls)
+				if len(results) != size || results[0].Err != nil {
+					b.Fatal("batch execution failed")
+				}
+			}
+		})
+	}
+}

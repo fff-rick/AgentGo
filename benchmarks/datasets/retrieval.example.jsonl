@@ -1,0 +1,2 @@
+{"id":"retrieval-rrf","query":"AgentGo Milvus BM25 RRF 检索","relevant_titles":["AgentGo 检索说明"],"top_k":2}
+{"id":"retrieval-tools","query":"AgentGo 有哪些工具 calculator web_search","relevant_titles":["AgentGo 工具说明"],"top_k":2}

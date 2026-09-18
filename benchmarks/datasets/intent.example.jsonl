@@ -1,0 +1,4 @@
+{"id":"intent-chat","message":"你好","intent":"chat"}
+{"id":"intent-rag","message":"根据知识库文档说明 RRF","intent":"rag_query"}
+{"id":"intent-tool","message":"计算 6 乘以 7","intent":"tool_use"}
+{"id":"intent-complex","message":"请规划三个步骤完成调研","intent":"complex_task"}

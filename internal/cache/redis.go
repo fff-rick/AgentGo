@@ -79,6 +79,9 @@ func (redisMetricsHook) AfterProcess(ctx context.Context, cmd redis.Cmder) error
 	if err == redis.Nil {
 		err = nil
 	}
+	if err != nil {
+		metrics.Default.DependencyErrors.WithLabelValues("redis", redisOperation(cmd.Name())).Inc()
+	}
 	trace.Finish(oteltrace.SpanFromContext(ctx), err)
 	return nil
 }

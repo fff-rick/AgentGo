@@ -47,6 +47,7 @@ type RunState struct {
 
 type Result struct {
 	Answer     string
+	Usage      *model.UsageInfo
 	Steps      []model.AgentStep
 	ToolCalls  []model.ToolCallInfo
 	References []model.Reference
@@ -78,6 +79,22 @@ func (l *Loop) Run(ctx context.Context, input Input) (runResult *Result, runErr 
 	messages = append(messages, input.Messages...)
 
 	result := &Result{}
+	var usage model.UsageInfo
+	missingUsage := false
+	addUsage := func(reported *model.UsageInfo) {
+		if reported == nil {
+			missingUsage = true
+			return
+		}
+		usage.PromptTokens += reported.PromptTokens
+		usage.CompletionTokens += reported.CompletionTokens
+		usage.TotalTokens += reported.TotalTokens
+	}
+	defer func() {
+		if runResult != nil && !missingUsage && usage.TotalTokens > 0 {
+			runResult.Usage = &usage
+		}
+	}()
 	forcedIndex := 0
 	maxDiscoveryCalls := input.MaxDiscoveryCalls
 	if maxDiscoveryCalls <= 0 {
@@ -102,6 +119,7 @@ func (l *Loop) Run(ctx context.Context, input Input) (runResult *Result, runErr 
 		if err != nil {
 			return nil, fmt.Errorf("Agent Loop 第 %d 次决策失败: %w", decisionCalls, err)
 		}
+		addUsage(resp.Usage)
 		if len(resp.ToolCalls) == 0 {
 			if forcedTool != "" {
 				return nil, fmt.Errorf("模型未按要求调用工具 %q", forcedTool)
@@ -174,6 +192,7 @@ func (l *Loop) Run(ctx context.Context, input Input) (runResult *Result, runErr 
 	if err != nil {
 		return nil, fmt.Errorf("生成最终答案失败: %w", err)
 	}
+	addUsage(resp.Usage)
 	result.Answer = cleanFinalAnswer(resp.Content)
 	if result.Answer == "" {
 		result.Answer = "抱歉，已达到工具调用上限，无法生成有效答案。"
@@ -252,6 +271,9 @@ func (l *Loop) chatStream(ctx context.Context, req *model.LLMRequest) (*model.LL
 		}
 		if len(event.ToolCalls) > 0 {
 			response.ToolCalls = event.ToolCalls
+		}
+		if event.Usage != nil {
+			response.Usage = event.Usage
 		}
 	}
 	response.Content = content.String()

@@ -1,0 +1,18 @@
+llm:
+  models:
+    - name: benchmark-primary
+      provider: openai-compatible
+      api_key: stub
+      base_url: ${BENCH_STUB_BASE_URL}
+      model: benchmark-primary
+      priority: 1
+    - name: benchmark-fallback
+      provider: openai-compatible
+      api_key: stub
+      base_url: ${BENCH_STUB_BASE_URL}
+      model: benchmark-fallback
+      priority: 2
+agent:
+  tool_model: benchmark-primary
+tools:
+  lazy_load_threshold: 100

@@ -25,13 +25,37 @@ func (*loopClient) Chat(context.Context, *model.LLMRequest) (*model.LLMResponse,
 func (c *loopClient) ChatStream(_ context.Context, req *model.LLMRequest) (<-chan llm.StreamEvent, error) {
 	c.requests = append(c.requests, req)
 	response := c.responses[len(c.requests)-1]
-	stream := make(chan llm.StreamEvent, 2)
+	stream := make(chan llm.StreamEvent, 3)
 	if response.Content != "" {
 		stream <- llm.StreamEvent{Content: response.Content}
+	}
+	if response.Usage != nil {
+		stream <- llm.StreamEvent{Usage: response.Usage}
 	}
 	stream <- llm.StreamEvent{Done: true, ToolCalls: response.ToolCalls}
 	close(stream)
 	return stream, nil
+}
+
+func TestLoopReportsOnlyCompleteProviderUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		usage *model.UsageInfo
+		want  bool
+	}{{"reported", &model.UsageInfo{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}, true}, {"missing", nil, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &loopClient{responses: []model.LLMResponse{{Content: "你好", Usage: tc.usage}}}
+			router := llm.NewRouter(map[string]llm.Client{"loop": client}, []config.ModelConfig{{Name: "loop"}}, config.CBConfig{FailureThreshold: 3, SuccessThreshold: 1})
+			registry := tool.NewRegistry()
+			result, err := New(router, tool.NewRouter(registry, zap.NewNop())).Run(context.Background(), Input{Messages: []model.LLMMessage{{Role: "user", Content: "你好"}}, MaxIterations: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (result.Usage != nil) != tc.want {
+				t.Fatalf("usage=%+v want reported=%t", result.Usage, tc.want)
+			}
+		})
+	}
 }
 func (*loopClient) Name() string                 { return "loop" }
 func (*loopClient) Healthy(context.Context) bool { return true }

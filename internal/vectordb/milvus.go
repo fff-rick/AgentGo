@@ -107,6 +107,9 @@ func (c *MilvusClient) Insert(ctx context.Context, collectionName string, record
 	start := time.Now()
 	defer func() {
 		metrics.Default.DependencyDuration.WithLabelValues("milvus", "insert").Observe(metrics.Seconds(start))
+		if insertErr != nil {
+			metrics.Default.DependencyErrors.WithLabelValues("milvus", "insert").Inc()
+		}
 	}()
 	if len(records) == 0 {
 		return nil
@@ -164,6 +167,9 @@ func (c *MilvusClient) SearchWithFilter(ctx context.Context, collectionName stri
 	start := time.Now()
 	defer func() {
 		metrics.Default.DependencyDuration.WithLabelValues("milvus", "search").Observe(metrics.Seconds(start))
+		if searchErr != nil {
+			metrics.Default.DependencyErrors.WithLabelValues("milvus", "search").Inc()
+		}
 	}()
 	if len(vector) != c.dimension {
 		return nil, fmt.Errorf("查询向量维度为 %d，期望 %d", len(vector), c.dimension)

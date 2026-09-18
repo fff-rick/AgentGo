@@ -68,12 +68,14 @@ func (r *Router) Chat(ctx context.Context, req *model.LLMRequest) (response *mod
 	breaker := r.getBreaker(modelName)
 
 	if !breaker.Allow() {
+		metrics.Default.LLMCircuitOpen.WithLabelValues(modelName).Inc()
 		// 主模型熔断，尝试降级
 		fallback, fbErr := r.findFallback(modelName)
 		if fbErr != nil {
 			return nil, common.ErrCircuitOpen(modelName)
 		}
 		r.log("模型 %s 熔断，降级到 %s", modelName, fallback.Name())
+		metrics.Default.LLMFallbacks.WithLabelValues(modelName, fallback.Name()).Inc()
 		client = fallback
 		breaker = r.getBreaker(fallback.Name())
 	}
@@ -114,12 +116,14 @@ func (r *Router) ChatStream(ctx context.Context, req *model.LLMRequest) (<-chan 
 	breaker := r.getBreaker(modelName)
 
 	if !breaker.Allow() {
+		metrics.Default.LLMCircuitOpen.WithLabelValues(modelName).Inc()
 		fallback, fbErr := r.findFallback(modelName)
 		if fbErr != nil {
 			trace.Finish(span, fbErr)
 			return nil, common.ErrCircuitOpen(modelName)
 		}
 		r.log("模型 %s 熔断，降级到 %s", modelName, fallback.Name())
+		metrics.Default.LLMFallbacks.WithLabelValues(modelName, fallback.Name()).Inc()
 		client = fallback
 		breaker = r.getBreaker(fallback.Name())
 	}

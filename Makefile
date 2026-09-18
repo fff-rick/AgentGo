@@ -1,4 +1,4 @@
-.PHONY: build run tui test test-milvus benchmark benchmark-e2e lint clean docker-build docker-run docker-stop docker-logs fmt vet
+.PHONY: build run tui test test-milvus benchmark benchmark-e2e benchmark-sse benchmark-intent benchmark-retrieval lint clean docker-build docker-run docker-stop docker-logs fmt vet
 
 APP_NAME := ai-agent-go
 APP_IMAGE ?= $(APP_NAME):local
@@ -46,6 +46,15 @@ benchmark-e2e:
 	@echo ">>> 运行端到端 benchmark..."
 	go run ./cmd/benchmark -base-url $(BENCH_URL) -dataset $(BENCH_DATASET) \
 		-concurrency $(BENCH_CONCURRENCY) -repeat $(BENCH_REPEAT)
+
+benchmark-sse:
+	go run ./cmd/benchmark-sse -base-url $(BENCH_URL)
+
+benchmark-intent:
+	go run ./cmd/benchmark-intent
+
+benchmark-retrieval:
+	go run ./cmd/benchmark-retrieval
 
 # 代码格式化
 fmt:

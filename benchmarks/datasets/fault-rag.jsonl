@@ -1,0 +1,1 @@
+{"id":"fault-rag","category":"fault","message":"根据文档介绍 AgentGo Milvus BM25 RRF 检索","expected":{"tool":"knowledge_search"}}

@@ -1,0 +1,8 @@
+FROM golang:1.22-alpine AS builder
+WORKDIR /app
+COPY cmd/benchmark-stub ./cmd/benchmark-stub
+COPY cmd/benchmark-proxy ./cmd/benchmark-proxy
+RUN GO111MODULE=off CGO_ENABLED=0 go build -o /stub ./cmd/benchmark-stub && GO111MODULE=off CGO_ENABLED=0 go build -o /proxy ./cmd/benchmark-proxy
+FROM alpine:3.19
+COPY --from=builder /stub /stub
+COPY --from=builder /proxy /proxy
