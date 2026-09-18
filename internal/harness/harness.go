@@ -74,6 +74,7 @@ type RunRequest struct {
 
 type RunResult struct {
 	Answer     string
+	Usage      *model.UsageInfo
 	Steps      []model.AgentStep
 	ToolCalls  []model.ToolCallInfo
 	References []model.Reference
@@ -151,7 +152,7 @@ func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (runResult *Run
 	}
 	state.Steps = append(state.Steps[:0], loopResult.Steps...)
 	result := &RunResult{
-		Answer: loopResult.Answer, Steps: loopResult.Steps,
+		Answer: loopResult.Answer, Usage: loopResult.Usage, Steps: loopResult.Steps,
 		ToolCalls: loopResult.ToolCalls, References: loopResult.References, RunID: state.RunID,
 	}
 	for _, hook := range h.hooks {

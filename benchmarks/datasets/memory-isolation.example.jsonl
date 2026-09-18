@@ -1,0 +1,1 @@
+{"id":"semantic-memory-user-isolation","category":"memory_isolation","turns":["请记住：我的代号是青鸟。","我的代号是什么？"],"turn_delay_ms":3000,"expected":{"keywords_all":["青鸟"],"isolation_probe":"我的代号是什么？","isolation_forbidden":"青鸟"}}

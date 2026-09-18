@@ -1,0 +1,10 @@
+llm:
+  models:
+    - name: gpt-5.5
+      provider: openai-compatible
+      api_key: ${APP_LLM_API_KEY}
+      base_url: ${APP_LLM_BASE_URL}
+      model: gpt-5.5
+      priority: 1
+agent:
+  tool_model: gpt-5.5

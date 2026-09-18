@@ -1,0 +1,7 @@
+services:
+  agentgo:
+    volumes:
+      - ./benchmarks/config.real-gpt.yaml:/app/config.yaml:ro
+    environment:
+      APP_AGENT_TOOL_MODEL: gpt-5.5
+      APP_MEMORY_EXTRACTION_TIMEOUT: 60s

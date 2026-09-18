@@ -1,0 +1,8 @@
+{"id":"http-chat","category":"http","message":"你好","expected":{"keywords_all":["你好"],"max_tool_calls":0}}
+{"id":"llm-go","category":"llm","message":"请介绍 Go goroutine","expected":{"keywords_all":["goroutine"]}}
+{"id":"agent-tool","category":"agent","message":"请计算 6 乘以 7","expected":{"keywords_all":["42"],"tool":"calculator","tools_exact":["calculator"],"tool_args":{"operation":"multiply","a":6,"b":7},"max_iterations":3}}
+{"id":"planner-simple","category":"planner","mode":"planner","message":"规划一个步骤，回答你好","expected":{"min_planner_steps":1}}
+{"id":"tool-search","category":"tool","message":"搜索 AgentGo benchmark","expected":{"tool":"web_search","keywords_any":["搜索","结果"]}}
+{"id":"rag-doc","category":"rag","message":"根据文档介绍 AgentGo Milvus BM25 RRF 检索","expected":{"tool":"knowledge_search","reference_titles":["AgentGo 检索说明"]}}
+{"id":"memory-name","category":"memory","turns":["记住：我的代号是青鸟。","我的代号是什么？"],"expected":{"keywords_all":["青鸟"]}}
+{"id":"context-limit","category":"context","message":"你好","expected":{"keywords_all":["你好"]}}

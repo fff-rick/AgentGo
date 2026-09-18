@@ -13,6 +13,8 @@ type Metrics struct {
 	HTTPRequests            *prometheus.CounterVec
 	HTTPDuration            *prometheus.HistogramVec
 	HTTPInflight            prometheus.Gauge
+	SSEConnections          prometheus.Gauge
+	SSEOutcomes             *prometheus.CounterVec
 	HTTPErrors              *prometheus.CounterVec
 	AgentRequests           *prometheus.CounterVec
 	AgentDuration           *prometheus.HistogramVec
@@ -29,6 +31,8 @@ type Metrics struct {
 	LLMCompletionTokens     *prometheus.CounterVec
 	LLMUsageReports         *prometheus.CounterVec
 	LLMErrors               *prometheus.CounterVec
+	LLMFallbacks            *prometheus.CounterVec
+	LLMCircuitOpen          *prometheus.CounterVec
 	RAGRequests             prometheus.Counter
 	RAGRetrievalDuration    prometheus.Histogram
 	RAGResults              prometheus.Histogram
@@ -41,6 +45,7 @@ type Metrics struct {
 	ContextTokens           prometheus.Histogram
 	ContextCompressionRatio prometheus.Histogram
 	DependencyDuration      *prometheus.HistogramVec
+	DependencyErrors        *prometheus.CounterVec
 }
 
 func New() *Metrics {
@@ -59,6 +64,8 @@ func New() *Metrics {
 		HTTPRequests:            count("agentgo_http_requests_total", "HTTP requests", "method", "route", "status"),
 		HTTPDuration:            hist("agentgo_http_request_duration_seconds", "HTTP request duration", "method", "route"),
 		HTTPInflight:            f.NewGauge(prometheus.GaugeOpts{Name: "agentgo_http_requests_inflight", Help: "HTTP requests in flight"}),
+		SSEConnections:          f.NewGauge(prometheus.GaugeOpts{Name: "agentgo_sse_connections", Help: "Open SSE connections"}),
+		SSEOutcomes:             count("agentgo_sse_outcomes_total", "SSE terminal outcomes", "result"),
 		HTTPErrors:              count("agentgo_http_errors_total", "HTTP 4xx and 5xx responses", "method", "route", "status"),
 		AgentRequests:           count("agentgo_agent_requests_total", "Agent runs", "mode", "result"),
 		AgentDuration:           hist("agentgo_agent_duration_seconds", "Agent run duration", "mode"),
@@ -75,6 +82,8 @@ func New() *Metrics {
 		LLMCompletionTokens:     count("agentgo_llm_completion_tokens_total", "Provider reported completion tokens", "model"),
 		LLMUsageReports:         count("agentgo_llm_usage_reports_total", "LLM calls with provider reported usage", "model", "stream"),
 		LLMErrors:               count("agentgo_llm_errors_total", "Failed LLM calls", "model", "stream"),
+		LLMFallbacks:            count("agentgo_llm_fallbacks_total", "LLM fallback selections", "from", "to"),
+		LLMCircuitOpen:          count("agentgo_llm_circuit_open_total", "Calls rejected by an open model circuit", "model"),
 		RAGRequests:             f.NewCounter(prometheus.CounterOpts{Name: "agentgo_rag_requests_total", Help: "RAG search requests"}),
 		RAGRetrievalDuration:    f.NewHistogram(prometheus.HistogramOpts{Name: "agentgo_rag_retrieval_duration_seconds", Help: "RAG retrieval duration", Buckets: seconds}),
 		RAGResults:              f.NewHistogram(prometheus.HistogramOpts{Name: "agentgo_rag_results_count", Help: "Final RAG result count", Buckets: prometheus.LinearBuckets(0, 1, 21)}),
@@ -87,6 +96,7 @@ func New() *Metrics {
 		ContextTokens:           f.NewHistogram(prometheus.HistogramOpts{Name: "agentgo_context_tokens", Help: "Estimated context tokens", Buckets: []float64{500, 1000, 2000, 4000, 8000, 12000, 16000, 24000, 32000, 64000}}),
 		ContextCompressionRatio: f.NewHistogram(prometheus.HistogramOpts{Name: "agentgo_context_compression_ratio", Help: "Estimated tokens after divided by before compression", Buckets: prometheus.LinearBuckets(0, .1, 11)}),
 		DependencyDuration:      hist("agentgo_dependency_duration_seconds", "Key dependency call duration", "dependency", "operation"),
+		DependencyErrors:        count("agentgo_dependency_errors_total", "Failed dependency calls", "dependency", "operation"),
 	}
 }
 

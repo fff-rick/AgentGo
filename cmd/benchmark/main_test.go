@@ -82,6 +82,88 @@ func TestBuildReport(t *testing.T) {
 	}
 }
 
+func TestRankingAndToolArguments(t *testing.T) {
+	score := rankScores([]string{"a", "b"}, []string{"x", "b", "a"})
+	if score.Recall != 1 || score.Precision != 2.0/3 || score.MRR != .5 || score.NDCG <= 0 || score.NDCG >= 1 {
+		t.Fatalf("ranking=%+v", score)
+	}
+	result := caseResult{}
+	failures := evaluate(assertion{Tool: "calculator", ToolArgs: map[string]any{"expression": "6*7"}, ReferenceOrder: []string{"b", "a"}}, chatResponse{ToolCalls: []toolCall{{ToolName: "calculator", Input: `{"expression":"6*7"}`}}, References: []reference{{DocID: "b"}, {DocID: "a"}}}, 10, &result)
+	if len(failures) != 0 {
+		t.Fatal(failures)
+	}
+	if !result.ToolArgsEvaluated || !result.ToolArgsPassed {
+		t.Fatalf("tool argument evaluation=%+v", result)
+	}
+}
+
+func TestToolsExactIgnoresDiscoveryCalls(t *testing.T) {
+	result := caseResult{}
+	failures := evaluate(assertion{ToolsExact: []string{"calculator"}}, chatResponse{ToolCalls: []toolCall{{ToolName: "list_tools"}, {ToolName: "list_tools"}, {ToolName: "calculator"}}}, 1, &result)
+	if len(failures) != 0 {
+		t.Fatal(failures)
+	}
+}
+
+func TestTimeoutKeepsRequestTraceID(t *testing.T) {
+	traceparent := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		traceparent <- r.Header.Get("traceparent")
+		time.Sleep(50 * time.Millisecond)
+	}))
+	defer server.Close()
+	client := &http.Client{Timeout: 20 * time.Millisecond}
+	_, _, traceID, err := sendChat(context.Background(), client, server.URL, chatRequest{})
+	if err == nil || len(traceID) != 32 {
+		t.Fatalf("trace=%q err=%v", traceID, err)
+	}
+	select {
+	case got := <-traceparent:
+		if len(got) < 36 || got[3:35] != traceID {
+			t.Fatalf("traceparent=%q trace=%q", got, traceID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive request")
+	}
+}
+
+func TestExpectedErrorStatusIsNotBusinessSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/sessions" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"session_id": "s"}})
+			return
+		}
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+	}))
+	defer server.Close()
+	got, err := execute(context.Background(), server.Client(), server.URL+"/api/v1/chat", testCase{ID: "large", Message: "large", Expected: assertion{ExpectedStatus: 413}}, 1)
+	if err != nil || !got.Passed || got.Success || got.HTTPSuccess || got.HTTPStatus != 413 {
+		t.Fatalf("result=%+v err=%v", got, err)
+	}
+}
+
+func TestIsolationProbeUsesSeparateIdentity(t *testing.T) {
+	t.Setenv("AGENTGO_ACCESS_TOKEN", "primary")
+	t.Setenv("AGENTGO_ISOLATION_ACCESS_TOKEN", "other")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity := r.Header.Get("Authorization")
+		if r.URL.Path == "/api/v1/sessions" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"session_id": identity}})
+			return
+		}
+		content := "青鸟"
+		if identity == "Bearer other" {
+			content = "不知道"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"content": content}})
+	}))
+	defer server.Close()
+	got, err := execute(context.Background(), server.Client(), server.URL+"/api/v1/chat", testCase{ID: "isolation", Message: "我的代号？", Expected: assertion{KeywordsAll: []string{"青鸟"}, IsolationProbe: "我的代号？", IsolationForbidden: "青鸟"}}, 1)
+	if err != nil || !got.Passed {
+		t.Fatalf("result=%+v err=%v", got, err)
+	}
+}
+
 var (
 	testTime     = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	testDuration = 2 * time.Second

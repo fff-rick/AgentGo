@@ -256,9 +256,13 @@ OIDC 默认关闭（`APP_AUTH_ENABLED=false`）：会话、聊天和记忆接口
 ```bash
 make benchmark       # 无外部依赖：ETL、工具路由、RRF、熔断器
 make benchmark-e2e   # 对已启动的 localhost:8080 运行 smoke 数据集
+sh benchmarks/compose.sh up -d --build # 独立的固定桩 Benchmark 环境，服务端口 18080
+BENCH_URL=http://localhost:18080 sh benchmarks/seed.sh # 导入示例检索语料
+bash benchmarks/run-k6.sh baseline # 记录带元数据的 HTTP 基线报告
 ```
 
 完整指标、Golden Dataset 规范、发布门禁与已知边界见 [Benchmark 设计](docs/BENCHMARK.md)。
+本地首轮固定桩与 GPT-5.5 实测见 [Benchmark 结果](docs/BENCHMARK_RESULTS.md)。
 
 ## 许可证
 

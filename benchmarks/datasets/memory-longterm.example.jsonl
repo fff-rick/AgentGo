@@ -1,0 +1,1 @@
+{"id":"semantic-memory-cross-session","category":"memory_longterm","turns":["请记住：我喜欢把技术总结写成中文。","我偏好用什么语言写技术总结？"],"new_session_at":2,"turn_delay_ms":3000,"expected":{"keywords_all":["中文"]}}

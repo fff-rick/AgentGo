@@ -1,0 +1,38 @@
+# Use: benchmarks/compose.sh up -d --build
+services:
+  agentgo:
+    volumes:
+      - ./benchmarks/config.stub.yaml:/app/config.yaml:ro
+    environment:
+      APP_REDIS_ADDR: benchmark-proxy:16379
+      BENCH_STUB_BASE_URL: http://benchmark-stub:8088
+      APP_MILVUS_ADDR: benchmark-proxy:19530
+      APP_EMBEDDING_BASE_URL: http://benchmark-stub:8088/v1
+      APP_EMBEDDING_API_KEY: stub
+      APP_EMBEDDING_MODEL: benchmark-stub
+      APP_EMBEDDING_TIMEOUT: 5s
+      APP_SEARCH_BASE_URL: http://benchmark-stub:8088
+      APP_SEARCH_TIMEOUT: 3s
+      APP_AGENT_DEFAULT_TIMEOUT: 15s
+      APP_LLM_CIRCUIT_BREAKER_FAILURE_THRESHOLD: 1
+      APP_TOOLS_LAZY_LOAD_THRESHOLD: 100
+      APP_AGENT_TOOL_MODEL: benchmark-primary
+    depends_on:
+      benchmark-proxy:
+        condition: service_started
+      benchmark-stub:
+        condition: service_started
+  benchmark-stub:
+    build:
+      context: .
+      dockerfile: benchmarks/Dockerfile.helpers
+    command: ["/stub"]
+    ports:
+      - "127.0.0.1:18088:8088"
+  benchmark-proxy:
+    build:
+      context: .
+      dockerfile: benchmarks/Dockerfile.helpers
+    command: ["/proxy"]
+    ports:
+      - "127.0.0.1:18099:8099"

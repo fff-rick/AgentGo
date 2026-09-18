@@ -36,7 +36,7 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 	}
 	return &model.ChatResponse{
 		SessionID: req.SessionID, Content: result.Answer, ToolCalls: result.ToolCalls,
-		Steps: result.Steps, References: result.References, CreatedAt: time.Now(),
+		Steps: result.Steps, References: result.References, Usage: result.Usage, CreatedAt: time.Now(),
 	}, nil
 }
 
