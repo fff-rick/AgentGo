@@ -10,7 +10,7 @@
 |------|---------|------|
 | 语言 | Go 1.22 | 高性能、强类型、原生并发 |
 | Web 框架 | Gin | 高性能 HTTP 框架 |
-| Agent 框架 | 自研 | AgentHarness / AgentLoop / Function Calling / Reflection |
+| Agent 框架 | 自研（借鉴PI Agent） | AgentHarness / AgentLoop / Function Calling / Reflection |
 | 向量数据库 | Milvus | 高性能向量检索 |
 | 缓存 | Redis | 会话管理 & 语义缓存 |
 | 关系数据库 | PostgreSQL | 持久化存储 |

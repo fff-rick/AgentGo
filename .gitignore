@@ -3,3 +3,4 @@ bin/
 .env
 benchmark-report.json
 benchmarks/reports/
+docs/png/
