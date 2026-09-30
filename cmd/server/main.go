@@ -144,7 +144,7 @@ func main() {
 
 	// 工具系统
 	toolRegistry := tool.NewRegistry()
-	registerBuiltinTools(toolRegistry, cfg.Search, cfg.Postgres, postgresClient, logger)
+	registerBuiltinTools(toolRegistry, cfg.Search, cfg.Postgres, cfg.Filesystem, postgresClient, redisCache, logger)
 	var skillRegistry *skill.Registry
 	if cfg.Skills.Enabled {
 		skillRegistry, diagnostics := skill.Load(append([]string{"./skills"}, cfg.Skills.Paths...))
@@ -240,11 +240,18 @@ func main() {
 }
 
 // registerBuiltinTools 注册所有内置工具
-func registerBuiltinTools(registry *tool.Registry, searchCfg config.SearchConfig, postgresCfg config.PostgresConfig, postgresClient *database.Client, logger *zap.Logger) {
+func registerBuiltinTools(registry *tool.Registry, searchCfg config.SearchConfig, postgresCfg config.PostgresConfig, filesystemCfg config.FilesystemConfig, postgresClient *database.Client, store cache.Cache, logger *zap.Logger) {
 	tools := []tool.Tool{
 		toolbuiltin.NewSearchTool(searchCfg, logger),
 		toolbuiltin.NewCalculatorTool(logger),
 		toolbuiltin.NewDatabaseTool(postgresClient.DB(), postgresCfg, logger),
+	}
+	if filesystemCfg.Enabled {
+		tools = append(tools,
+			toolbuiltin.NewFileInspectTool(),
+			toolbuiltin.NewFileEditPreviewTool(store),
+			toolbuiltin.NewFileEditApplyTool(store),
+		)
 	}
 	for _, t := range tools {
 		if err := registry.Register(t); err != nil {

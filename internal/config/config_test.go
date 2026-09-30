@@ -62,11 +62,25 @@ func TestLoadMultiModelRoutingConfig(t *testing.T) {
 	if cfg.Tools.LazyLoadThreshold != 3 || cfg.Tools.MaxDiscoveryCalls != 4 {
 		t.Fatalf("unexpected tool config: %+v", cfg.Tools)
 	}
+	if !cfg.Filesystem.Enabled {
+		t.Fatal("filesystem should be enabled by default")
+	}
 	if !cfg.Skills.Enabled || len(cfg.Skills.Paths) != 0 {
 		t.Fatalf("unexpected skill config: %+v", cfg.Skills)
 	}
 	if !cfg.Auth.Enabled || cfg.Auth.Issuer != "https://issuer.example" || cfg.Auth.Audience != "agentgo" {
 		t.Fatalf("auth config=%+v", cfg.Auth)
+	}
+}
+
+func TestLoadFilesystemEnv(t *testing.T) {
+	t.Setenv("APP_FILESYSTEM_ENABLED", "false")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Filesystem.Enabled {
+		t.Fatal("APP_FILESYSTEM_ENABLED=false was ignored")
 	}
 }
 

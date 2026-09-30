@@ -33,6 +33,9 @@ tools:
   lazy_load_threshold: 3
   max_discovery_calls: 4
 
+filesystem:
+  enabled: true
+
 skills:
   enabled: true
   paths: []

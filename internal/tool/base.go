@@ -8,6 +8,17 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/model"
 )
 
+type scopeContextKey struct{}
+
+func WithScope(ctx context.Context, scope Scope) context.Context {
+	return context.WithValue(ctx, scopeContextKey{}, scope)
+}
+
+func ScopeFromContext(ctx context.Context) Scope {
+	scope, _ := ctx.Value(scopeContextKey{}).(Scope)
+	return scope
+}
+
 // Tool 工具接口，所有可被 Agent 调用的工具必须实现此接口
 type Tool interface {
 	// Name 返回工具的唯一标识名称

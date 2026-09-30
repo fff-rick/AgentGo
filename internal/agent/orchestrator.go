@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/enterprise/ai-agent-go/internal/harness"
@@ -25,10 +26,17 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 	if req.Options != nil {
 		mode = req.Options.Mode
 	}
-	scope := tool.Scope{SessionID: session.ID}
+	scope := tool.Scope{SessionID: session.ID, UserID: session.UserID}
 	if req.Options != nil && req.Options.Tools != nil {
 		scope.Restricted = true
 		scope.Allowed = uniqueNames(req.Options.Tools)
+	}
+	var requiredTools []string
+	var runtimeInstructions []string
+	if req.Options != nil && len(req.Options.ApprovedProposals) > 0 {
+		scope.ApprovedProposals = uniqueNames(req.Options.ApprovedProposals)
+		requiredTools = []string{tool.FileEditApplyName}
+		runtimeInstructions = []string{fmt.Sprintf("用户已明确批准文件修改 proposal %q；调用 file_edit_apply 提交这些 ID，不要提交其他 ID。", scope.ApprovedProposals)}
 	}
 	var skillNames []string
 	skillsDisabled := false
@@ -39,6 +47,7 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 	result, err := o.harness.Run(ctx, &harness.RunRequest{
 		Session: session, Message: req.Message, Mode: mode, ToolScope: scope,
 		SkillNames: skillNames, SkillsDisabled: skillsDisabled,
+		RequiredTools: requiredTools, RuntimeInstructions: runtimeInstructions,
 	})
 	if err != nil {
 		return nil, err

@@ -110,6 +110,16 @@ func TestManagerDiscoversWithoutExposingSchemas(t *testing.T) {
 	}
 }
 
+func TestManagerInjectsApprovedFileApplyTool(t *testing.T) {
+	registry := NewRegistry()
+	registry.MustRegister(managerTool{name: FileEditApplyName})
+	manager := NewManager(registry, newManagerCache(), 3, time.Hour, zap.NewNop())
+	definitions := manager.InitialDefinitions(context.Background(), Scope{SessionID: "session", ApprovedProposals: []string{"proposal"}})
+	if len(definitions) != 2 || definitions[1].Function.Name != FileEditApplyName {
+		t.Fatalf("definitions=%+v", definitions)
+	}
+}
+
 func TestManagerPersistsFrequencyAndEvictsLeastRecentlyUsed(t *testing.T) {
 	registry := NewRegistry()
 	for _, name := range []string{"alpha", "beta", "gamma"} {

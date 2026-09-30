@@ -22,13 +22,14 @@ type CreateSessionRequest struct {
 
 // ChatOptions 对话可选参数
 type ChatOptions struct {
-	Model       string   `json:"model,omitempty"`       // 指定模型
-	Mode        string   `json:"mode,omitempty"`        // agent（默认）/ planner（显式规划执行）
-	Temperature float64  `json:"temperature,omitempty"` // 温度参数
-	MaxTokens   int      `json:"max_tokens,omitempty"`  // 最大 token 数
-	Tools       []string `json:"tools,omitempty"`       // 允许使用的工具列表
-	Skills      []string `json:"skills,omitempty"`      // 显式加载的 Skill；空数组禁用 Skill
-	EnableRAG   *bool    `json:"enable_rag,omitempty"`  // 是否启用 RAG
+	Model             string   `json:"model,omitempty"`              // 指定模型
+	Mode              string   `json:"mode,omitempty"`               // agent（默认）/ planner（显式规划执行）
+	Temperature       float64  `json:"temperature,omitempty"`        // 温度参数
+	MaxTokens         int      `json:"max_tokens,omitempty"`         // 最大 token 数
+	Tools             []string `json:"tools,omitempty"`              // 允许使用的工具列表
+	Skills            []string `json:"skills,omitempty"`             // 显式加载的 Skill；空数组禁用 Skill
+	ApprovedProposals []string `json:"approved_proposals,omitempty"` // 本次请求允许提交的文件修改 proposal
+	EnableRAG         *bool    `json:"enable_rag,omitempty"`         // 是否启用 RAG
 }
 
 // DocumentUploadRequest 文档上传请求

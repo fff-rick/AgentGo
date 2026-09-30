@@ -17,15 +17,18 @@ import (
 const (
 	ListToolsName      = "list_tools"
 	LoadSkillName      = "load_skill"
+	FileEditApplyName  = "file_edit_apply"
 	globalUsageKey     = "agentgo:v1:tools:global"
 	sessionToolKeyBase = "agentgo:v2:session:"
 )
 
 type Scope struct {
-	SessionID     string
-	Allowed       []string
-	Restricted    bool
-	SkillsEnabled bool
+	SessionID         string
+	UserID            string
+	Allowed           []string
+	Restricted        bool
+	SkillsEnabled     bool
+	ApprovedProposals []string
 }
 
 func (s Scope) Allows(name string) bool {
@@ -111,7 +114,17 @@ func (m *Manager) InitialDefinitions(ctx context.Context, scope Scope) []model.T
 			definitions = append(definitions, definition(candidate))
 		}
 	}
-	return append(definitions, m.definitionsForState(state, scope)...)
+	definitions = append(definitions, m.definitionsForState(state, scope)...)
+	if len(scope.ApprovedProposals) > 0 && scope.Allows(FileEditApplyName) {
+		loaded := false
+		for _, candidate := range definitions {
+			loaded = loaded || candidate.Function.Name == FileEditApplyName
+		}
+		if candidate, ok := m.registry.Get(FileEditApplyName); ok && !loaded {
+			definitions = append(definitions, definition(candidate))
+		}
+	}
+	return definitions
 }
 
 func (m *Manager) Handle(ctx context.Context, scope Scope, input string) (*ToolResult, error) {

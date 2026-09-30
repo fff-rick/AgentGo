@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/enterprise/ai-agent-go/internal/observe"
+	"github.com/google/uuid"
 )
 
 type streamEvent struct {
@@ -191,6 +192,20 @@ func (m *model) submit() (tea.Model, tea.Cmd) {
 		return m, tea.Batch(waitEvent(events), tickSpinner())
 	}
 	mode := ""
+	var approvedProposals []string
+	if query == "/approve" {
+		m.logs = append(m.logs, errorStyle.Render("错误: 请在 /approve 后指定 proposal_id"))
+		return m, nil
+	}
+	if strings.HasPrefix(query, "/approve ") {
+		proposalID := strings.TrimSpace(strings.TrimPrefix(query, "/approve "))
+		if _, err := uuid.Parse(proposalID); err != nil {
+			m.logs = append(m.logs, errorStyle.Render("错误: proposal_id 格式无效"))
+			return m, nil
+		}
+		approvedProposals = []string{proposalID}
+		query = "批准并提交文件修改 proposal_id=" + proposalID
+	}
 	if query == "/plan" {
 		m.logs = append(m.logs, errorStyle.Render("错误: 请在 /plan 后指定任务"))
 		return m, nil
@@ -206,12 +221,14 @@ func (m *model) submit() (tea.Model, tea.Cmd) {
 	label := "你: "
 	if mode == "planner" {
 		label = "规划任务: "
+	} else if len(approvedProposals) > 0 {
+		label = "批准修改: "
 	}
 	m.logs = append(m.logs, userStyle.Render(label)+query)
 	ctx, cancel := context.WithCancel(context.Background())
 	events := make(chan streamEvent, 32)
 	m.beginRequest(cancel, events)
-	go stream(ctx, m.baseURL, m.session, query, mode, events)
+	go stream(ctx, m.baseURL, m.session, query, mode, approvedProposals, events)
 	return m, tea.Batch(waitEvent(events), tickSpinner())
 }
 
@@ -341,7 +358,7 @@ func (m *model) View() string {
 	if m.scrollOffset > 0 {
 		scrollHint = fmt.Sprintf(" · 距最新 %d 行", m.scrollOffset)
 	}
-	help := statusStyle.Render("Enter 发送 · ↑↓/PgUp/PgDn/鼠标滚轮 查看历史" + scrollHint + " · /plan 规划 · /import 导入 · /clear 清空 · Ctrl+C 退出")
+	help := statusStyle.Render("Enter 发送 · ↑↓/PgUp/PgDn/鼠标滚轮 查看历史" + scrollHint + " · /plan 规划 · /approve 批准 · /import 导入 · /clear 清空 · Ctrl+C 退出")
 	b.WriteString("\n" + ansi.Truncate(help, width, "…"))
 	return b.String()
 }
@@ -378,11 +395,11 @@ func (m *model) scrollBy(delta int) {
 	m.scrollOffset = max(0, min(m.maxScrollOffset(), m.scrollOffset+delta))
 }
 
-func stream(ctx context.Context, baseURL, session, query, mode string, events chan<- streamEvent) {
+func stream(ctx context.Context, baseURL, session, query, mode string, approvedProposals []string, events chan<- streamEvent) {
 	defer close(events)
 	payload := map[string]any{"session_id": session, "message": query, "stream": true}
-	if mode != "" {
-		payload["options"] = map[string]string{"mode": mode}
+	if mode != "" || len(approvedProposals) > 0 {
+		payload["options"] = map[string]any{"mode": mode, "approved_proposals": approvedProposals}
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/v1/chat/stream", bytes.NewReader(body))
