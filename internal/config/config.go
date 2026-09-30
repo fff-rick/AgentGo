@@ -29,6 +29,7 @@ type Config struct {
 	Auth      AuthConfig      `mapstructure:"auth"`
 	Context   ContextConfig   `mapstructure:"context"`
 	Tools     ToolConfig      `mapstructure:"tools"`
+	Skills    SkillConfig     `mapstructure:"skills"`
 	Log       LogConfig       `mapstructure:"log"`
 	Document  DocumentConfig  `mapstructure:"document"`
 }
@@ -141,6 +142,11 @@ type ContextConfig struct {
 type ToolConfig struct {
 	LazyLoadThreshold int `mapstructure:"lazy_load_threshold"`
 	MaxDiscoveryCalls int `mapstructure:"max_discovery_calls"`
+}
+
+type SkillConfig struct {
+	Enabled bool     `mapstructure:"enabled"`
+	Paths   []string `mapstructure:"paths"`
 }
 
 // RAGConfig 检索增强生成配置
@@ -329,6 +335,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("context.summary_max_tokens", 2000)
 	v.SetDefault("tools.lazy_load_threshold", 3)
 	v.SetDefault("tools.max_discovery_calls", 4)
+	v.SetDefault("skills.enabled", true)
+	v.SetDefault("skills.paths", []string{})
 
 	// RAG 默认配置
 	v.SetDefault("rag.top_k", 5)

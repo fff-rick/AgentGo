@@ -145,7 +145,7 @@ func (l *Loop) Run(ctx context.Context, input Input) (runResult *Result, runErr 
 		hasBusinessCall := false
 		for i, call := range resp.ToolCalls {
 			calls[i] = tool.ToolCall{Name: call.Function.Name, Input: call.Function.Arguments}
-			if call.Function.Name != tool.ListToolsName {
+			if call.Function.Name != tool.ListToolsName && call.Function.Name != tool.LoadSkillName {
 				hasBusinessCall = true
 			}
 			observe.Emit(ctx, observe.Event{Type: observe.TypeToolCall, Stage: "tool", Tool: &model.ToolCallInfo{ToolName: call.Function.Name, Input: call.Function.Arguments}})
@@ -328,8 +328,13 @@ func toolExecutionResult(call model.LLMToolCall, execution *tool.ToolCallResult)
 		duration = execution.Duration.Milliseconds()
 	}
 	info := model.ToolCallInfo{ToolName: call.Function.Name, Input: call.Function.Arguments, Output: output, Duration: duration}
+	trusted := call.Function.Name == tool.LoadSkillName && execution != nil && execution.Result != nil && execution.Result.Trusted
+	messageOutput := output
+	if !trusted {
+		messageOutput = truncateRunes(output, maxToolOutputRunes)
+	}
 	wrapped, _ := json.Marshal(map[string]interface{}{
-		"source": "tool", "trusted": false, "success": success, "output": truncateRunes(output, maxToolOutputRunes),
+		"source": "tool", "trusted": trusted, "success": success, "output": messageOutput,
 	})
 	return info, string(wrapped)
 }

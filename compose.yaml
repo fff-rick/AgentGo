@@ -20,6 +20,8 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -188,6 +190,7 @@ services:
       APP_CONTEXT_SUMMARY_MAX_TOKENS: ${APP_CONTEXT_SUMMARY_MAX_TOKENS:-2000}
       APP_TOOLS_LAZY_LOAD_THRESHOLD: ${APP_TOOLS_LAZY_LOAD_THRESHOLD:-3}
       APP_TOOLS_MAX_DISCOVERY_CALLS: ${APP_TOOLS_MAX_DISCOVERY_CALLS:-4}
+      APP_SKILLS_ENABLED: ${APP_SKILLS_ENABLED:-true}
       APP_RAG_TOP_K: ${APP_RAG_TOP_K:-5}
       APP_RAG_SCORE_THRESHOLD: ${APP_RAG_SCORE_THRESHOLD:-0.5}
       APP_RAG_CHUNK_SIZE: ${APP_RAG_CHUNK_SIZE:-512}

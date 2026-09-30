@@ -27,6 +27,7 @@ WORKDIR /app
 
 COPY --from=builder /app/server .
 COPY --from=builder /app/config.yaml .
+COPY --from=builder /app/skills ./skills
 
 EXPOSE 8080
 

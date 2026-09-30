@@ -16,19 +16,24 @@ import (
 
 const (
 	ListToolsName      = "list_tools"
+	LoadSkillName      = "load_skill"
 	globalUsageKey     = "agentgo:v1:tools:global"
 	sessionToolKeyBase = "agentgo:v2:session:"
 )
 
 type Scope struct {
-	SessionID  string
-	Allowed    []string
-	Restricted bool
+	SessionID     string
+	Allowed       []string
+	Restricted    bool
+	SkillsEnabled bool
 }
 
 func (s Scope) Allows(name string) bool {
 	if name == ListToolsName {
 		return true
+	}
+	if name == LoadSkillName {
+		return s.SkillsEnabled
 	}
 	if !s.Restricted {
 		return true
@@ -84,8 +89,8 @@ func (m *Manager) Threshold() int { return m.threshold }
 func (m *Manager) ValidateAllowed(names []string) error {
 	seen := make(map[string]struct{}, len(names))
 	for _, name := range names {
-		if name == ListToolsName {
-			return fmt.Errorf("%s 是保留工具名", ListToolsName)
+		if name == ListToolsName || name == LoadSkillName {
+			return fmt.Errorf("%s 是保留工具名", name)
 		}
 		if _, duplicate := seen[name]; duplicate {
 			continue
@@ -100,7 +105,13 @@ func (m *Manager) ValidateAllowed(names []string) error {
 
 func (m *Manager) InitialDefinitions(ctx context.Context, scope Scope) []model.ToolDef {
 	state, _ := m.readState(ctx, scope.SessionID)
-	return append([]model.ToolDef{m.listToolsDefinition()}, m.definitionsForState(state, scope)...)
+	definitions := []model.ToolDef{m.listToolsDefinition()}
+	if scope.SkillsEnabled {
+		if candidate, ok := m.registry.Get(LoadSkillName); ok {
+			definitions = append(definitions, definition(candidate))
+		}
+	}
+	return append(definitions, m.definitionsForState(state, scope)...)
 }
 
 func (m *Manager) Handle(ctx context.Context, scope Scope, input string) (*ToolResult, error) {
@@ -127,7 +138,7 @@ func (m *Manager) Handle(ctx context.Context, scope Scope, input string) (*ToolR
 }
 
 func (m *Manager) RecordUse(ctx context.Context, scope Scope, name string) {
-	if name == ListToolsName || !scope.Allows(name) {
+	if name == ListToolsName || name == LoadSkillName || !scope.Allows(name) {
 		return
 	}
 	m.mu.Lock()
@@ -162,6 +173,9 @@ func (m *Manager) catalog(ctx context.Context, scope Scope) []CatalogEntry {
 	tools := m.registry.ListTools()
 	entries := make([]CatalogEntry, 0, len(tools))
 	for _, candidate := range tools {
+		if candidate.Name() == LoadSkillName {
+			continue
+		}
 		if !scope.Allows(candidate.Name()) {
 			continue
 		}
@@ -195,7 +209,7 @@ func (m *Manager) load(ctx context.Context, scope Scope, names []string) (*ToolR
 	}
 	seen := make(map[string]struct{}, len(names))
 	for _, name := range names {
-		if name == ListToolsName || !scope.Allows(name) {
+		if name == ListToolsName || name == LoadSkillName || !scope.Allows(name) {
 			return NewErrorResult(fmt.Sprintf("工具 %q 不在允许列表中", name)), nil
 		}
 		if _, ok := m.registry.Get(name); !ok {

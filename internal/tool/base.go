@@ -30,6 +30,7 @@ type ToolResult struct {
 	Error           string            `json:"error,omitempty"`
 	References      []model.Reference `json:"references,omitempty"`
 	ToolDefinitions []model.ToolDef   `json:"-"`
+	Trusted         bool              `json:"-"`
 }
 
 // NewSuccessResult 创建成功的工具执行结果
