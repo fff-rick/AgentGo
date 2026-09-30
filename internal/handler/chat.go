@@ -19,6 +19,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/observe"
+	"github.com/enterprise/ai-agent-go/internal/tool"
 	"github.com/enterprise/ai-agent-go/internal/trace"
 	"github.com/enterprise/ai-agent-go/pkg/common"
 )
@@ -50,6 +51,16 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	if !validExecutionMode(req.Options) {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.mode 只支持 agent 或 planner")
 		return
+	}
+	if err := validateFileApprovals(req.Options); err != nil {
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, err.Error())
+		return
+	}
+	if req.Options != nil && len(req.Options.ApprovedProposals) > 0 {
+		if err := h.orchestrator.ValidateAllowedTools([]string{tool.FileEditApplyName}); err != nil {
+			common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "文件系统工具不可用: "+err.Error())
+			return
+		}
 	}
 	if req.Options != nil && req.Options.Tools != nil {
 		if err := h.orchestrator.ValidateAllowedTools(req.Options.Tools); err != nil {
@@ -103,6 +114,16 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 	if !validExecutionMode(req.Options) {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.mode 只支持 agent 或 planner")
 		return
+	}
+	if err := validateFileApprovals(req.Options); err != nil {
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, err.Error())
+		return
+	}
+	if req.Options != nil && len(req.Options.ApprovedProposals) > 0 {
+		if err := h.orchestrator.ValidateAllowedTools([]string{tool.FileEditApplyName}); err != nil {
+			common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "文件系统工具不可用: "+err.Error())
+			return
+		}
 	}
 	if req.Options != nil && req.Options.Tools != nil {
 		if err := h.orchestrator.ValidateAllowedTools(req.Options.Tools); err != nil {
@@ -179,6 +200,29 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 
 func validExecutionMode(options *model.ChatOptions) bool {
 	return options == nil || options.Mode == "" || options.Mode == model.ExecutionModeAgent || options.Mode == model.ExecutionModePlanner
+}
+
+func validateFileApprovals(options *model.ChatOptions) error {
+	if options == nil || len(options.ApprovedProposals) == 0 {
+		return nil
+	}
+	if options.Mode == model.ExecutionModePlanner {
+		return fmt.Errorf("文件修改审批仅支持 agent 模式")
+	}
+	for _, id := range options.ApprovedProposals {
+		if _, err := uuid.Parse(id); err != nil {
+			return fmt.Errorf("approved_proposals 包含无效 ID %q", id)
+		}
+	}
+	if options.Tools != nil {
+		for _, name := range options.Tools {
+			if name == tool.FileEditApplyName {
+				return nil
+			}
+		}
+		return fmt.Errorf("options.tools 必须包含 %s", tool.FileEditApplyName)
+	}
+	return nil
 }
 
 func (*ChatHandler) writeChatError(c *gin.Context, err error) {

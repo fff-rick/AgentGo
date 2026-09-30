@@ -16,22 +16,23 @@ import (
 
 // Config 应用程序全局配置结构
 type Config struct {
-	Server    ServerConfig    `mapstructure:"server"`
-	LLM       LLMConfig       `mapstructure:"llm"`
-	Redis     RedisConfig     `mapstructure:"redis"`
-	Milvus    MilvusConfig    `mapstructure:"milvus"`
-	Embedding EmbeddingConfig `mapstructure:"embedding"`
-	Postgres  PostgresConfig  `mapstructure:"postgres"`
-	Agent     AgentConfig     `mapstructure:"agent"`
-	RAG       RAGConfig       `mapstructure:"rag"`
-	Search    SearchConfig    `mapstructure:"search"`
-	Memory    MemoryConfig    `mapstructure:"memory"`
-	Auth      AuthConfig      `mapstructure:"auth"`
-	Context   ContextConfig   `mapstructure:"context"`
-	Tools     ToolConfig      `mapstructure:"tools"`
-	Skills    SkillConfig     `mapstructure:"skills"`
-	Log       LogConfig       `mapstructure:"log"`
-	Document  DocumentConfig  `mapstructure:"document"`
+	Server     ServerConfig     `mapstructure:"server"`
+	LLM        LLMConfig        `mapstructure:"llm"`
+	Redis      RedisConfig      `mapstructure:"redis"`
+	Milvus     MilvusConfig     `mapstructure:"milvus"`
+	Embedding  EmbeddingConfig  `mapstructure:"embedding"`
+	Postgres   PostgresConfig   `mapstructure:"postgres"`
+	Agent      AgentConfig      `mapstructure:"agent"`
+	RAG        RAGConfig        `mapstructure:"rag"`
+	Search     SearchConfig     `mapstructure:"search"`
+	Memory     MemoryConfig     `mapstructure:"memory"`
+	Auth       AuthConfig       `mapstructure:"auth"`
+	Context    ContextConfig    `mapstructure:"context"`
+	Tools      ToolConfig       `mapstructure:"tools"`
+	Filesystem FilesystemConfig `mapstructure:"filesystem"`
+	Skills     SkillConfig      `mapstructure:"skills"`
+	Log        LogConfig        `mapstructure:"log"`
+	Document   DocumentConfig   `mapstructure:"document"`
 }
 
 // ServerConfig HTTP 服务器配置
@@ -142,6 +143,10 @@ type ContextConfig struct {
 type ToolConfig struct {
 	LazyLoadThreshold int `mapstructure:"lazy_load_threshold"`
 	MaxDiscoveryCalls int `mapstructure:"max_discovery_calls"`
+}
+
+type FilesystemConfig struct {
+	Enabled bool `mapstructure:"enabled"`
 }
 
 type SkillConfig struct {
@@ -335,6 +340,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("context.summary_max_tokens", 2000)
 	v.SetDefault("tools.lazy_load_threshold", 3)
 	v.SetDefault("tools.max_discovery_calls", 4)
+	v.SetDefault("filesystem.enabled", true)
 	v.SetDefault("skills.enabled", true)
 	v.SetDefault("skills.paths", []string{})
 

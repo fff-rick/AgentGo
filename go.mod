@@ -13,6 +13,7 @@ require (
 	github.com/jackc/pgx/v5 v5.7.2
 	github.com/milvus-io/milvus/client/v2 v2.5.0
 	github.com/openai/openai-go/v3 v3.44.0
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/prometheus/client_golang v1.14.0
 	github.com/spf13/viper v1.18.2
 	github.com/xuri/excelize/v2 v2.8.1
@@ -97,7 +98,6 @@ require (
 	github.com/panjf2000/ants/v2 v2.7.2 // indirect
 	github.com/pelletier/go-toml/v2 v2.1.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
 	github.com/prometheus/client_model v0.3.0 // indirect
 	github.com/prometheus/common v0.42.0 // indirect

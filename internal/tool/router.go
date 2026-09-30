@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -83,7 +84,7 @@ func (r *Router) ExecuteScoped(ctx context.Context, scope Scope, toolName, input
 	}
 
 	// 使用带超时的子 Context
-	execCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	execCtx, cancel := context.WithTimeout(WithScope(ctx, scope), r.timeout)
 	defer cancel()
 
 	start := time.Now()
@@ -92,7 +93,7 @@ func (r *Router) ExecuteScoped(ctx context.Context, scope Scope, toolName, input
 	}
 	r.logger.Info("开始执行工具",
 		zap.String("tool", toolName),
-		zap.String("input", truncate(input, 200)),
+		zap.String("input", loggableInput(toolName, input)),
 	)
 
 	result, err := t.Execute(execCtx, input)
@@ -115,6 +116,17 @@ func (r *Router) ExecuteScoped(ctx context.Context, scope Scope, toolName, input
 	)
 
 	return result, nil
+}
+
+func loggableInput(toolName, input string) string {
+	if toolName != "file_edit_preview" {
+		return truncate(input, 200)
+	}
+	var value struct {
+		Path string `json:"path"`
+	}
+	_ = json.Unmarshal([]byte(input), &value)
+	return fmt.Sprintf("{path:%q,input_bytes:%d}", value.Path, len(input))
 }
 
 // BatchExecute 并发执行多个工具调用。

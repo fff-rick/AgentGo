@@ -112,7 +112,7 @@ TUI 会实时展示 Agent Loop 阶段、模型显式 reasoning、原生 Function
 /import /home/xin/docs/orders.xlsx
 ```
 
-Markdown 必须为 UTF-8 且不超过 10 MiB；PDF、DOCX、XLSX 不超过 50 MiB。文件导入异步执行，TUI 会轮询状态并展示精确的页码或 Excel 单元格范围。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/plan <任务>` 显式启用 Planner-Executor，`/clear` 创建新会话，`Ctrl+C` 退出。Planner 模式由调用方指定，与意图识别无关。本地模式无需令牌；启用 OIDC 后需设置 `AGENTGO_ACCESS_TOKEN`。`AGENTGO_USER_ID` 仅作显示名，身份由服务端决定。也可先通过 API 创建会话，再观察 SSE 事件：
+Markdown 必须为 UTF-8 且不超过 10 MiB；PDF、DOCX、XLSX 不超过 50 MiB。文件导入异步执行，TUI 会轮询状态并展示精确的页码或 Excel 单元格范围。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/plan <任务>` 显式启用 Planner-Executor，`/approve <proposal_id>` 批准文件修改，`/clear` 创建新会话，`Ctrl+C` 退出。Planner 模式由调用方指定，与意图识别无关。本地模式无需令牌；启用 OIDC 后需设置 `AGENTGO_ACCESS_TOKEN`。`AGENTGO_USER_ID` 仅作显示名，身份由服务端决定。也可先通过 API 创建会话，再观察 SSE 事件：
 
 ```bash
 SESSION_ID=$(curl -s http://localhost:8080/api/v1/sessions \
@@ -189,11 +189,14 @@ APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 | `APP_CONTEXT_RECENT_MESSAGES` | `20` | 压缩后优先保留的最近消息数 |
 | `APP_TOOLS_LAZY_LOAD_THRESHOLD` | `3` | 每个会话最多保留的业务工具 Schema 数量 |
 | `APP_TOOLS_MAX_DISCOVERY_CALLS` | `4` | 单次 Agent Run 最多允许的 `list_tools` 控制调用次数 |
+| `APP_FILESYSTEM_ENABLED` | `true` | 是否启用本地文本文件浏览、修改预览和审批提交工具 |
 | `APP_SKILLS_ENABLED` | `true` | 是否在启动时加载 Skill |
 
 文档上传会按规范化后的内容类型和标题生成稳定文档 ID，并按原始内容生成 ContentHash；同一文档内容未变化时跳过处理，内容变化时覆盖 PostgreSQL 索引和 Milvus 向量并清理多余旧分块。分块经配置的 Embedding 服务批量向量化后 Upsert 到 Milvus，同时通过纯 Go 中文分词写入 PostgreSQL 倒排词频索引并使用 BM25 排序。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。
 
 工具 Schema 按会话惰性加载：每轮默认只携带 `list_tools` 和最多 3 个最近使用的业务工具。`options.tools` 缺省或为 `null` 时允许全部注册工具，显式 `[]` 时禁用全部业务工具，非空数组作为工具允许列表；未知工具名会返回 HTTP 400。
+
+文件工具只接受服务进程可见的绝对路径和不超过 1 MiB 的 UTF-8 普通文件。`file_edit_preview` 先返回 diff 与 15 分钟有效的 `proposal_id`，不会直接落盘；TUI 使用 `/approve <proposal_id>`，API 调用方使用 `options.approved_proposals` 批准后，`file_edit_apply` 才会校验文件哈希并原子替换。该功能默认开启且不限制绝对路径，权限边界就是 AgentGo 进程的操作系统权限；不要把未启用 OIDC 的服务暴露到不可信网络。Compose 默认把 `${AGENTGO_WORKSPACE_PATH:-.}` 挂载为容器内 `/workspace`，宿主机直跑则直接使用宿主路径。
 
 ### Skills
 

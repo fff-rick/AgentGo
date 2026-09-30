@@ -79,7 +79,7 @@ func TestStreamReceivesAnswerDeltas(t *testing.T) {
 	defer server.Close()
 
 	events := make(chan streamEvent, 8)
-	stream(context.Background(), server.URL, "session", "query", "planner", events)
+	stream(context.Background(), server.URL, "session", "query", "planner", nil, events)
 	var chunks []string
 	for raw := range events {
 		if raw.name != observe.TypeAnswerDelta {
@@ -96,6 +96,32 @@ func TestStreamReceivesAnswerDeltas(t *testing.T) {
 	}
 	if mode != "planner" {
 		t.Fatalf("mode=%q, want planner", mode)
+	}
+}
+
+func TestStreamSendsApprovedProposal(t *testing.T) {
+	proposalID := "123e4567-e89b-12d3-a456-426614174000"
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Options struct {
+				Approved []string `json:"approved_proposals"`
+			} `json:"options"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		got = request.Options.Approved
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: done\ndata: {}\n\n")
+	}))
+	defer server.Close()
+	events := make(chan streamEvent, 4)
+	stream(context.Background(), server.URL, "session", "approve", "", []string{proposalID}, events)
+	for range events {
+	}
+	if len(got) != 1 || got[0] != proposalID {
+		t.Fatalf("approved_proposals=%v", got)
 	}
 }
 
@@ -153,5 +179,14 @@ func TestInputAcceptsSpaces(t *testing.T) {
 	}
 	if m.input != "AgentGo TUI" {
 		t.Fatalf("input = %q, want %q", m.input, "AgentGo TUI")
+	}
+}
+
+func TestApproveCommandRejectsInvalidID(t *testing.T) {
+	m := &model{input: "/approve not-a-uuid"}
+	updated, cmd := m.submit()
+	m = updated.(*model)
+	if cmd != nil || len(m.logs) != 1 || !strings.Contains(m.logs[0], "格式无效") {
+		t.Fatalf("logs=%v cmd=%v", m.logs, cmd)
 	}
 }
