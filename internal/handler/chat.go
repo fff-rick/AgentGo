@@ -57,6 +57,12 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 			return
 		}
 	}
+	if req.Options != nil && req.Options.Skills != nil {
+		if err := h.orchestrator.ValidateSkills(req.Options.Skills); err != nil {
+			common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.skills 无效: "+err.Error())
+			return
+		}
+	}
 	session, err := h.sessions.GetSession(c.Request.Context(), req.SessionID)
 	if err != nil {
 		h.writeChatError(c, err)
@@ -101,6 +107,12 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 	if req.Options != nil && req.Options.Tools != nil {
 		if err := h.orchestrator.ValidateAllowedTools(req.Options.Tools); err != nil {
 			common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.tools 无效: "+err.Error())
+			return
+		}
+	}
+	if req.Options != nil && req.Options.Skills != nil {
+		if err := h.orchestrator.ValidateSkills(req.Options.Skills); err != nil {
+			common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "options.skills 无效: "+err.Error())
 			return
 		}
 	}

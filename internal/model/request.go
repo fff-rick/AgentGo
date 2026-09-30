@@ -27,6 +27,7 @@ type ChatOptions struct {
 	Temperature float64  `json:"temperature,omitempty"` // 温度参数
 	MaxTokens   int      `json:"max_tokens,omitempty"`  // 最大 token 数
 	Tools       []string `json:"tools,omitempty"`       // 允许使用的工具列表
+	Skills      []string `json:"skills,omitempty"`      // 显式加载的 Skill；空数组禁用 Skill
 	EnableRAG   *bool    `json:"enable_rag,omitempty"`  // 是否启用 RAG
 }
 

@@ -30,7 +30,16 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 		scope.Restricted = true
 		scope.Allowed = uniqueNames(req.Options.Tools)
 	}
-	result, err := o.harness.Run(ctx, &harness.RunRequest{Session: session, Message: req.Message, Mode: mode, ToolScope: scope})
+	var skillNames []string
+	skillsDisabled := false
+	if req.Options != nil && req.Options.Skills != nil {
+		skillNames = uniqueNames(req.Options.Skills)
+		skillsDisabled = len(req.Options.Skills) == 0
+	}
+	result, err := o.harness.Run(ctx, &harness.RunRequest{
+		Session: session, Message: req.Message, Mode: mode, ToolScope: scope,
+		SkillNames: skillNames, SkillsDisabled: skillsDisabled,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -42,6 +51,10 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, req *model.ChatReques
 
 func (o *Orchestrator) ValidateAllowedTools(names []string) error {
 	return o.harness.ValidateAllowedTools(names)
+}
+
+func (o *Orchestrator) ValidateSkills(names []string) error {
+	return o.harness.ValidateSkills(names)
 }
 
 func uniqueNames(names []string) []string {

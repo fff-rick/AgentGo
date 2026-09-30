@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/harness"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/skill"
 	"github.com/enterprise/ai-agent-go/internal/tool"
 )
 
@@ -178,6 +182,50 @@ func TestChatToolsAllowlistValidationAndExplicitEmptyList(t *testing.T) {
 	}
 	if len(contexts.input.Tools) != 1 || contexts.input.Tools[0].Function.Name != tool.ListToolsName {
 		t.Fatalf("empty allowlist initial tools=%+v", contexts.input.Tools)
+	}
+}
+
+func TestChatValidatesAndExplicitlyLoadsSkills(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	skillDir := filepath.Join(t.TempDir(), "review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: review\ndescription: Review code\n---\nFollow the checklist."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	skills, diagnostics := skill.Load([]string{filepath.Dir(skillDir)})
+	if len(diagnostics) != 0 {
+		t.Fatal(diagnostics)
+	}
+	registry := tool.NewRegistry()
+	registry.MustRegister(tool.NewSkillTool(skills))
+	toolRouter := tool.NewRouter(registry, zap.NewNop(), tool.NewManager(registry, nil, 3, time.Hour, zap.NewNop()))
+	sessions := &sessionManagerStub{}
+	contexts := &recordingChatContext{}
+	agentHarness := harness.New(chatLoopStub{}, nil, contexts, sessions, nil, toolRouter, nil, 2, 4, time.Second, zap.NewNop())
+	agentHarness.SetSkills(skills)
+	handler := NewChatHandler(agent.NewOrchestrator(agentHarness), sessions, zap.NewNop())
+
+	request := func(skillsJSON string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/chat", bytes.NewBufferString(`{"session_id":"session-1","message":"hello","options":{"skills":`+skillsJSON+`}}`))
+		req.Header.Set("Content-Type", "application/json")
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = req
+		auth.SetIdentity(ctx, "user-1")
+		handler.Chat(ctx)
+		return recorder
+	}
+
+	if recorder := request(`["missing"]`); recorder.Code != http.StatusBadRequest || sessions.getCalls != 0 {
+		t.Fatalf("unknown status=%d calls=%d body=%s", recorder.Code, sessions.getCalls, recorder.Body.String())
+	}
+	if recorder := request(`[]`); recorder.Code != http.StatusOK || len(contexts.input.RuntimeInstructions) != 0 {
+		t.Fatalf("disabled status=%d instructions=%v", recorder.Code, contexts.input.RuntimeInstructions)
+	}
+	if recorder := request(`["review"]`); recorder.Code != http.StatusOK || len(contexts.input.RuntimeInstructions) != 2 || !strings.Contains(strings.Join(contexts.input.RuntimeInstructions, "\n"), "Follow the checklist") {
+		t.Fatalf("explicit status=%d instructions=%v", recorder.Code, contexts.input.RuntimeInstructions)
 	}
 }
 func (*sessionManagerStub) GetUser(context.Context, string) (*model.UserInfo, error) { return nil, nil }

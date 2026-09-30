@@ -189,10 +189,45 @@ APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 | `APP_CONTEXT_RECENT_MESSAGES` | `20` | 压缩后优先保留的最近消息数 |
 | `APP_TOOLS_LAZY_LOAD_THRESHOLD` | `3` | 每个会话最多保留的业务工具 Schema 数量 |
 | `APP_TOOLS_MAX_DISCOVERY_CALLS` | `4` | 单次 Agent Run 最多允许的 `list_tools` 控制调用次数 |
+| `APP_SKILLS_ENABLED` | `true` | 是否在启动时加载 Skill |
 
 文档上传会按规范化后的内容类型和标题生成稳定文档 ID，并按原始内容生成 ContentHash；同一文档内容未变化时跳过处理，内容变化时覆盖 PostgreSQL 索引和 Milvus 向量并清理多余旧分块。分块经配置的 Embedding 服务批量向量化后 Upsert 到 Milvus，同时通过纯 Go 中文分词写入 PostgreSQL 倒排词频索引并使用 BM25 排序。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。
 
 工具 Schema 按会话惰性加载：每轮默认只携带 `list_tools` 和最多 3 个最近使用的业务工具。`options.tools` 缺省或为 `null` 时允许全部注册工具，显式 `[]` 时禁用全部业务工具，非空数组作为工具允许列表；未知工具名会返回 HTTP 400。
+
+### Skills
+
+AgentGo 在启动时递归扫描项目 `skills/**/SKILL.md`，并可通过 `config.yaml` 的 `skills.paths` 追加目录。每个 Skill 使用 YAML frontmatter 声明名称和描述：
+
+```markdown
+---
+name: code-review
+description: 审查 Go 代码的正确性、安全性和可维护性。
+---
+
+# Code Review
+
+按照以下顺序进行审查……
+```
+
+默认 Agent 模式只把名称和描述放入系统提示词，模型在任务匹配时通过受限的 `load_skill` 工具加载正文。该工具只能读取启动时注册的名称，不支持任意文件、引用文件或脚本。Skill 是部署者提供的可信指令，修改后需要重启服务；挂载额外目录时应使用只读挂载。
+
+聊天请求可通过 `options.skills` 显式加载 Skill：字段缺省时允许 Agent 自动选择，非空数组会预先加载指定 Skill，显式 `[]` 则禁用本次请求的全部 Skill。Planner 模式不会自动选择 Skill，只使用显式指定项；未知名称返回 HTTP 400。
+
+```json
+{
+  "session_id": "...",
+  "message": "审查这段 Go 代码",
+  "options": {"skills": ["code-review"]}
+}
+```
+
+```yaml
+skills:
+  enabled: true
+  paths:
+    - /opt/agentgo-skills
+```
 
 从旧版“按内容生成文档 ID”升级时，需要先清空 PostgreSQL 文档索引和配置的 Milvus 文档 collection，再重新导入知识库；服务不会自动删除存量知识。验证 Milvus 数据链路：
 

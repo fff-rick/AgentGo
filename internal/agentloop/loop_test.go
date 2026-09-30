@@ -3,6 +3,7 @@ package agentloop
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,15 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/tool"
 )
+
+func TestToolExecutionTrustIsLimitedToLoadSkill(t *testing.T) {
+	execution := &tool.ToolCallResult{Result: &tool.ToolResult{Success: true, Output: strings.Repeat("x", maxToolOutputRunes+1), Trusted: true}}
+	_, skillMessage := toolExecutionResult(toolCall("skill", tool.LoadSkillName), execution)
+	_, ordinaryMessage := toolExecutionResult(toolCall("ordinary", "web_search"), execution)
+	if !strings.Contains(skillMessage, `"trusted":true`) || strings.Contains(skillMessage, "[truncated]") || !strings.Contains(ordinaryMessage, `"trusted":false`) || !strings.Contains(ordinaryMessage, "[truncated]") {
+		t.Fatalf("skill=%s ordinary=%s", skillMessage, ordinaryMessage)
+	}
+}
 
 type loopClient struct {
 	responses []model.LLMResponse
@@ -173,6 +183,30 @@ func TestLoopLoadsColdToolWithoutConsumingBusinessIteration(t *testing.T) {
 	}
 	if client.requests[3].ToolChoice != "none" || len(client.requests[3].Tools) != 0 {
 		t.Fatalf("forced final request retained schemas: %+v", client.requests[3])
+	}
+}
+
+func TestLoopLoadsSkillWithoutConsumingBusinessIteration(t *testing.T) {
+	client := &loopClient{responses: []model.LLMResponse{
+		{ToolCalls: []model.LLMToolCall{toolCall("skill", tool.LoadSkillName)}},
+		{ToolCalls: []model.LLMToolCall{toolCall("search", "web_search")}},
+		{Content: "done"},
+	}}
+	llmRouter := llm.NewRouter(map[string]llm.Client{"loop": client}, []config.ModelConfig{{Name: "loop"}}, config.CBConfig{FailureThreshold: 3, SuccessThreshold: 1})
+	loader := &loopTool{name: tool.LoadSkillName}
+	search := &loopTool{name: "web_search"}
+	registry := tool.NewRegistry()
+	registry.MustRegister(loader)
+	registry.MustRegister(search)
+	toolRouter := tool.NewRouter(registry, zap.NewNop())
+	scope := tool.Scope{SkillsEnabled: true}
+
+	result, err := New(llmRouter, toolRouter).Run(context.Background(), Input{
+		Messages: []model.LLMMessage{{Role: "user", Content: "review then search"}},
+		Tools:    toolRouter.InitialToolDefinitions(context.Background(), scope), MaxIterations: 1, ToolScope: scope,
+	})
+	if err != nil || result.Answer != "done" || loader.calls != 1 || search.calls != 1 {
+		t.Fatalf("result=%+v loader_calls=%d search_calls=%d err=%v", result, loader.calls, search.calls, err)
 	}
 }
 

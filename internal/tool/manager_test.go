@@ -163,6 +163,9 @@ func TestManagerEnforcesAllowlistAndDegradesOnRedisFailure(t *testing.T) {
 	if err := manager.ValidateAllowed([]string{ListToolsName}); err == nil {
 		t.Fatal("reserved tool name was accepted")
 	}
+	if err := manager.ValidateAllowed([]string{LoadSkillName}); err == nil {
+		t.Fatal("reserved skill tool name was accepted")
+	}
 	result, err := manager.Load(context.Background(), scope, []string{"alpha"})
 	if err != nil || !result.Success || len(result.ToolDefinitions) != 1 {
 		t.Fatalf("degraded load result=%+v err=%v", result, err)

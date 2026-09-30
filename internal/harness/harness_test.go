@@ -3,6 +3,9 @@ package harness
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +17,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/config"
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/model"
+	"github.com/enterprise/ai-agent-go/internal/skill"
 	"github.com/enterprise/ai-agent-go/internal/tool"
 )
 
@@ -109,6 +113,93 @@ func (t toolsStub) InitialToolDefinitions(context.Context, tool.Scope) []model.T
 	return t.definitions
 }
 func (toolsStub) ValidateAllowedTools([]string) error { return nil }
+
+type skillContextStub struct{ input agentcontext.BuildInput }
+
+func (c *skillContextStub) Build(_ context.Context, input agentcontext.BuildInput) (*agentcontext.AgentContext, error) {
+	c.input = input
+	return &agentcontext.AgentContext{
+		SystemPrompt: strings.Join(input.RuntimeInstructions, "\n"),
+		Messages:     []model.LLMMessage{{Role: "user", Content: input.Query}},
+		Tools:        input.Tools,
+	}, nil
+}
+
+type skillToolsStub struct{ scope tool.Scope }
+
+func (t *skillToolsStub) InitialToolDefinitions(_ context.Context, scope tool.Scope) []model.ToolDef {
+	t.scope = scope
+	if !scope.SkillsEnabled {
+		return nil
+	}
+	return []model.ToolDef{{Type: "function", Function: model.FunctionDef{Name: tool.LoadSkillName}}}
+}
+func (*skillToolsStub) ValidateAllowedTools([]string) error { return nil }
+
+func testSkillRegistry(t *testing.T) *skill.Registry {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "review")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: review\ndescription: Review Go code\n---\nFollow the review checklist."
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, diagnostics := skill.Load([]string{filepath.Dir(dir)})
+	if len(diagnostics) != 0 {
+		t.Fatal(diagnostics)
+	}
+	return registry
+}
+
+func TestHarnessProgressivelyDisclosesSkillsAndSupportsDisabling(t *testing.T) {
+	contexts := &skillContextStub{}
+	tools := &skillToolsStub{}
+	loop := &loopStub{}
+	h := New(loop, nil, contexts, &sessionsStub{}, nil, tools, nil, 2, 4, time.Second, zap.NewNop())
+	h.SetSkills(testSkillRegistry(t))
+	session := &model.Session{ID: "session", UserID: "user"}
+
+	if _, err := h.Run(context.Background(), &RunRequest{Session: session, Message: "review"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(contexts.input.RuntimeInstructions) != 1 || !strings.Contains(contexts.input.RuntimeInstructions[0], "Review Go code") || strings.Contains(contexts.input.RuntimeInstructions[0], "Follow the review checklist") {
+		t.Fatalf("automatic instructions=%v", contexts.input.RuntimeInstructions)
+	}
+	if !tools.scope.SkillsEnabled || !loop.input.ToolScope.SkillsEnabled || len(loop.input.Tools) != 1 {
+		t.Fatalf("scope=%+v loop=%+v", tools.scope, loop.input)
+	}
+
+	if _, err := h.Run(context.Background(), &RunRequest{Session: session, Message: "review", SkillsDisabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(contexts.input.RuntimeInstructions) != 0 || tools.scope.SkillsEnabled || loop.input.ToolScope.SkillsEnabled {
+		t.Fatalf("disabled instructions=%v scope=%+v", contexts.input.RuntimeInstructions, tools.scope)
+	}
+}
+
+func TestHarnessPlannerUsesOnlyExplicitSkills(t *testing.T) {
+	contexts := &skillContextStub{}
+	tools := &skillToolsStub{}
+	planner := &plannerStub{}
+	h := New(&loopStub{}, planner, contexts, &sessionsStub{}, nil, tools, nil, 2, 4, time.Second, zap.NewNop())
+	h.SetSkills(testSkillRegistry(t))
+	session := &model.Session{ID: "session", UserID: "user"}
+
+	if _, err := h.Run(context.Background(), &RunRequest{Session: session, Message: "review", Mode: model.ExecutionModePlanner}); err != nil {
+		t.Fatal(err)
+	}
+	if len(contexts.input.RuntimeInstructions) != 0 || tools.scope.SkillsEnabled {
+		t.Fatalf("automatic planner instructions=%v scope=%+v", contexts.input.RuntimeInstructions, tools.scope)
+	}
+	if _, err := h.Run(context.Background(), &RunRequest{Session: session, Message: "review", Mode: model.ExecutionModePlanner, SkillNames: []string{"review"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(contexts.input.RuntimeInstructions) != 1 || !strings.Contains(contexts.input.RuntimeInstructions[0], "Follow the review checklist") || strings.Contains(contexts.input.RuntimeInstructions[0], "available_skills") || tools.scope.SkillsEnabled {
+		t.Fatalf("explicit planner instructions=%v scope=%+v", contexts.input.RuntimeInstructions, tools.scope)
+	}
+}
 
 type hookStub struct{}
 

@@ -32,6 +32,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/memory"
 	"github.com/enterprise/ai-agent-go/internal/rag"
 	"github.com/enterprise/ai-agent-go/internal/router"
+	"github.com/enterprise/ai-agent-go/internal/skill"
 	"github.com/enterprise/ai-agent-go/internal/tool"
 	toolbuiltin "github.com/enterprise/ai-agent-go/internal/tool/builtin"
 	"github.com/enterprise/ai-agent-go/internal/trace"
@@ -144,6 +145,17 @@ func main() {
 	// 工具系统
 	toolRegistry := tool.NewRegistry()
 	registerBuiltinTools(toolRegistry, cfg.Search, cfg.Postgres, postgresClient, logger)
+	var skillRegistry *skill.Registry
+	if cfg.Skills.Enabled {
+		skillRegistry, diagnostics := skill.Load(append([]string{"./skills"}, cfg.Skills.Paths...))
+		for _, diagnostic := range diagnostics {
+			logger.Warn("加载 Skill 失败", zap.String("path", diagnostic.Path), zap.String("reason", diagnostic.Message))
+		}
+		if skillRegistry.Count() > 0 {
+			toolRegistry.MustRegister(tool.NewSkillTool(skillRegistry))
+			logger.Info("Skill 已加载", zap.Int("count", skillRegistry.Count()))
+		}
+	}
 	toolManager := tool.NewManager(toolRegistry, redisCache, cfg.Tools.LazyLoadThreshold, cfg.Memory.SessionTTL, logger)
 	toolRouter := tool.NewRouter(toolRegistry, logger, toolManager)
 
@@ -161,6 +173,9 @@ func main() {
 	loop := agentloop.New(modelRouter, toolRouter)
 	planner := agent.NewPlannerAgent(modelRouter, toolRouter, logger)
 	agentHarness := harness.New(loop, planner, contextBuilder, sessionManager, memoryExtractor, toolRouter, hooks, cfg.Agent.MaxIterations, cfg.Tools.MaxDiscoveryCalls, cfg.Agent.DefaultTimeout, logger)
+	if skillRegistry != nil && skillRegistry.Count() > 0 {
+		agentHarness.SetSkills(skillRegistry)
+	}
 	agentHarness.SetMemoryJobs(memoryJobs)
 	agentHarness.SetPrecompactor(precompactor)
 	orchestrator := agent.NewOrchestrator(agentHarness)

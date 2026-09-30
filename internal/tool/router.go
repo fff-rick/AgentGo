@@ -153,7 +153,7 @@ func (r *Router) ValidateAllowedTools(names []string) error {
 		return r.manager.ValidateAllowed(names)
 	}
 	for _, name := range names {
-		if name == ListToolsName {
+		if name == ListToolsName || name == LoadSkillName {
 			return fmt.Errorf("%s 是保留工具名", ListToolsName)
 		}
 		if _, ok := r.registry.Get(name); !ok {
