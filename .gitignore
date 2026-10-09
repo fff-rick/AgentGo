@@ -1,6 +1,15 @@
 bin/
 /tui
-.env
+.env*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+id_rsa
+id_ed25519
 benchmark-report.json
 benchmarks/reports/
 docs/png/

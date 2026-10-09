@@ -175,6 +175,18 @@ bash benchmarks/slow-client.sh # 固定 300 个流式增量，比较正常与慢
 
 检索命令需要从宿主机连接本地测试库；固定桩环境可在加载 `.env` 后覆盖 `APP_POSTGRES_PORT=15432`、`APP_MILVUS_ADDR=localhost:19531`、`APP_EMBEDDING_API_KEY=stub`、`APP_EMBEDDING_BASE_URL=http://localhost:18088/v1`、`APP_EMBEDDING_MODEL=benchmark-stub`，然后运行 `go run ./cmd/benchmark-retrieval -backend stub`。意图识别器**不在默认 Agent 执行路径**；固定桩环境使用 `BENCH_STUB_BASE_URL=http://localhost:18088 go run ./cmd/benchmark-intent -config benchmarks/config.stub.yaml -backend stub`，读取 `intent.example.jsonl` 并报告 Macro-F1。真实模型环境可直接运行 `go run ./cmd/benchmark-intent`。
 
+Laya 工具筛选不改变默认 Agent 执行结果。先启动 Laya HTTP 服务，再运行 `make benchmark-laya`；可用 `APP_LAYA_URL` 或 `-url` 指定 `/v1/systemone`。评测使用 `primary_tool`、`secondary_tool` 两个 choice，`file_edit_apply` 从候选中硬排除；默认以 10 秒评测超时预热中英文 checkpoint，生产配置仍保持独立。报告同时给出原始多标签质量、每个 choice 的概率与置信度、门控覆盖率、Exact Match、禁用工具误选和稳态延迟分位数。`laya-tool-selection.seed.jsonl` 仅用于验证评测链路，`config.seed_dataset=true`，不得作为上线质量证据；正式结论必须替换为脱敏、人工审核并冻结的数据集。`-min-confidence=-1` 不启用门控，设置为 `[0,1]` 时才评估 Laya 的 abstention 结果。
+
+Laya 意图识别以 shadow 方式接入所有有效对话请求，不自动切换执行模式。为避免 `rag_query|tool_use|complex_task` 语义重叠，请求 Schema 拆为两个 choice：`execution_mode=agent|planner` 和 `information_source=none|internal_knowledge|web|database|file|calculator`；是否需要工具直接由 `information_source != none` 推导，再映射到现有四类指标。Laya 的 `scenario` 包含上下文构建器输出的最近 6 条 user/assistant 消息（单条最多 500 字符），`request` 单独保存当前输入。意图数据集可增加 `history` 数组验证指代和多轮场景。
+
+可用 `go run ./cmd/benchmark-intent -engine laya -laya-url http://127.0.0.1:8000/v1/systemone -min-confidence 0` 对意图数据集计算 Accuracy、Macro-F1、coverage、Brier score 和 10-bin ECE。置信度校准必须使用未参与 Schema/Prompt 调整的审核集，建议至少 200 条并覆盖各类别：先用 `min-confidence=0` 收集所有预测；可靠性良好时 Brier/ECE 应趋近 0；再根据业务可接受的误判率从报告中选门槛，并在冻结测试集复验 coverage 与准确率。当前 Laya checkpoint 的启动警告表明模型温度参数被修正，因此在完成这一步之前，`answer_confidence` 只能用于分析，不能直接解释为真实正确概率或启用 live 路由。
+
+设置 `APP_LAYA_ENABLED=true`、`APP_LAYA_MODE=shadow` 后，服务启动时先以独立 10 秒超时预热中英文 checkpoint；任一预热失败时本次进程不启用 shadow。启用后，Planner 在原有大模型完成 lazy tool selection 后异步请求 Laya，并通过 `agentgo_laya_disagreements_total` 与 `agentgo_laya_fallbacks_total` 记录结果。影子结果不会加载或执行工具；含明确否定约束的请求直接回退，`file_edit_apply` 永不进入候选。当前 `live` 模式不会启用。AgentGo 运行在 Compose 中时，宿主 Laya 需监听 `0.0.0.0`；原生 Docker 通常可使用 `host.docker.internal`，Docker Desktop + WSL 若无法连通，则将 `APP_LAYA_URL` 设置为 `ip -4 addr show eth0` 显示的 WSL 地址。
+
+完整服务与 Laya 均健康后，运行 `make benchmark-laya-shadow`。命令复用黑盒 E2E runner，默认执行 10 条 Planner seed 用例各 50 次（共 500 次，调用真实 LLM，会产生相应耗时与费用），并将业务结果写入 `benchmarks/reports/laya-shadow-e2e.json`、Laya 指标差值写入 `laya-shadow-summary.json`。可用 `BENCH_REPEAT`、`BENCH_CONCURRENCY` 和 `BENCH_TIMEOUT` 覆盖默认值。数据集的 `tools` 字段会作为请求级允许列表发送，限制测试可调用的工具范围。Planner shadow 日志与报告 `case_map` 都记录完整 `task_sha256`，可在不写入原始请求文本的情况下定位分歧用例；完成日志还记录 primary/secondary choice、原始 confidence 与 answer confidence，供分类错误和校准错误分别归因。哈希只用于关联，不应视为敏感文本匿名化。
+
+当前 seed 数据的原始单请求基线 Exact Match 为 `0.50`。质量定位中，扩写 `database_query` 描述虽修正了受限候选下的文档计数用例，但完整候选集 Exact Match 降至 `0.375`；将 secondary 改为排除 primary 后的顺序请求，在原始/扩写描述下分别只有 `0.417`/`0.292`。两种方案均未进入运行路径。现阶段 secondary 重复和候选集敏感性应视为模型/决策模式限制，继续保持 shadow，不能据此启用 live 或开始微调。
+
 ```bash
 bash benchmarks/run-k6.sh baseline
 bash benchmarks/run-k6.sh load

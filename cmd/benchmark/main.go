@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -57,6 +58,7 @@ type testCase struct {
 	TurnDelayMS  int               `json:"turn_delay_ms,omitempty"`
 	Metadata     map[string]string `json:"metadata,omitempty"`
 	Mode         string            `json:"mode,omitempty"`
+	Tools        []string          `json:"tools,omitempty"`
 	Expected     assertion         `json:"expected"`
 }
 
@@ -111,6 +113,7 @@ type caseResult struct {
 	HTTPStatus        int             `json:"http_status,omitempty"`
 	ChatRequests      int             `json:"chat_requests"`
 	TraceID           string          `json:"trace_id,omitempty"`
+	TaskSHA256        string          `json:"task_sha256,omitempty"`
 	ToolCalls         []toolCall      `json:"tool_calls,omitempty"`
 	ReferenceIDs      []string        `json:"reference_ids,omitempty"`
 	StepCount         int             `json:"step_count,omitempty"`
@@ -307,7 +310,7 @@ func runAll(client *http.Client, endpoint string, cases []testCase, repeat, conc
 var sessionSequence uint64
 
 func execute(ctx context.Context, client *http.Client, endpoint string, tc testCase, run int) (caseResult, error) {
-	result := caseResult{ID: tc.ID, Category: tc.Category, Run: run}
+	result := caseResult{ID: tc.ID, Category: tc.Category, Run: run, TaskSHA256: taskSHA256(tc.Message)}
 	userID := fmt.Sprintf("benchmark-%d", atomic.AddUint64(&sessionSequence, 1))
 	sessionID, err := createBenchmarkSession(ctx, client, strings.TrimSuffix(endpoint, "/chat")+"/sessions", userID)
 	if err != nil {
@@ -336,8 +339,14 @@ func execute(ctx context.Context, client *http.Client, endpoint string, tc testC
 		result.ChatRequests++
 		var err error
 		payload := chatRequest{SessionID: sessionID, Message: message, Metadata: tc.Metadata}
-		if tc.Mode != "" {
-			payload.Options = map[string]any{"mode": tc.Mode}
+		if tc.Mode != "" || tc.Tools != nil {
+			payload.Options = make(map[string]any, 2)
+			if tc.Mode != "" {
+				payload.Options["mode"] = tc.Mode
+			}
+			if tc.Tools != nil {
+				payload.Options["tools"] = tc.Tools
+			}
 		}
 		env, status, result.TraceID, err = sendChat(ctx, client, endpoint, payload)
 		result.HTTPStatus = status
@@ -386,6 +395,13 @@ func execute(ctx context.Context, client *http.Client, endpoint string, tc testC
 	}
 	result.Passed = len(result.Failures) == 0
 	return result, nil
+}
+
+func taskSHA256(task string) string {
+	if task == "" {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(task)))
 }
 
 func createBenchmarkSession(ctx context.Context, client *http.Client, endpoint, userID string) (string, error) {

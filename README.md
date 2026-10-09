@@ -1,70 +1,55 @@
-# AI Agent 企业级智能体平台（Go 版本）
+<p align="center">
+  <strong>AgentGo</strong><br/>
+  Go 原生 AI Agent 平台 · 让工具、知识与记忆协同工作
+</p>
 
-## 项目简介
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white" alt="Go 1.22+" />
+  <img src="https://img.shields.io/badge/API-Gin-3972D6" alt="Gin API" />
+  <img src="https://img.shields.io/badge/Streaming-SSE-399878" alt="SSE Streaming" />
+  <img src="https://img.shields.io/badge/RAG-Hybrid-8256C7" alt="Hybrid RAG" />
+</p>
 
-基于 Go 1.22 构建的企业级 AI Agent 智能体平台，采用自研 Agent 框架，支持多模型路由、原生 Function Calling、RAG 增强检索、工具调用、记忆管理等核心能力。
+# AgentGo｜Go 原生智能体平台
 
-## 技术栈
+基于 Go 1.22 构建，采用自研 AgentHarness 与 AgentLoop，支持原生 Function Calling、混合检索、三层记忆、多模型路由，以及可观察的终端交互。
 
-| 组件 | 技术选型 | 说明 |
-|------|---------|------|
-| 语言 | Go 1.22 | 高性能、强类型、原生并发 |
-| Web 框架 | Gin | 高性能 HTTP 框架 |
-| Agent 框架 | 自研（借鉴PI Agent） | AgentHarness / AgentLoop / Function Calling / Reflection |
-| 向量数据库 | Milvus | 高性能向量检索 |
-| 缓存 | Redis | 会话管理 & 语义缓存 |
-| 关系数据库 | PostgreSQL | 持久化存储 |
-| 链路追踪 | OpenTelemetry | 全链路可观测 |
+[![AgentGo 总体架构](docs/assets/architecture.svg)](docs/ARCHITECTURE.md)
 
-## 核心架构
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#核心工作流">核心工作流</a> ·
+  <a href="docs/ARCHITECTURE.md">架构与源码导航</a> ·
+  <a href="#api-接口">API</a> ·
+  <a href="docs/BENCHMARK_RESULTS.md">Benchmark 结果</a>
+</p>
 
-```
-┌──────────────────────────────────────────────────────┐
-│                    API 网关层 (Gin)                    │
-├──────────────────────────────────────────────────────┤
-│                   Handler 处理层                      │
-│       Session / Chat / Document Handler               │
-├──────────────────────────────────────────────────────┤
-│             AgentHarness 生命周期管理层               │
-│   Context Builder → AgentLoop → Hooks → Memory       │
-├──────────────────────────────────────────────────────┤
-│  ┌────────┐ ┌────────┐ ┌────────┐ ┌─────────────┐  │
-│  │RAG Tool│ │ Tools  │ │3-Layer │ │ Reflection  │  │
-│  │       │ │ System │ │ Memory │ │    Hook     │  │
-│  └────────┘ └────────┘ └────────┘ └─────────────┘  │
-├──────────────────────────────────────────────────────┤
-│  ┌────────┐ ┌────────┐ ┌────────┐ ┌─────────────┐  │
-│  │  LLM   │ │ Milvus │ │ Redis  │ │ PostgreSQL  │  │
-│  │ Router │ │ Client │ │ Cache  │ │   Client    │  │
-│  └────────┘ └────────┘ └────────┘ └─────────────┘  │
-└──────────────────────────────────────────────────────┘
-```
+## 项目能力
 
-## 目录结构
+| 能力 | 实现方式 |
+| --- | --- |
+| 自主工具调用 | 模型在同一 Run 内选择直接回答，或多轮调用工具；工具 Schema 按会话惰性加载 |
+| 知识增强 | Milvus 向量召回 + PostgreSQL BM25，RRF 融合，可选 LLM 重排序 |
+| 上下文与记忆 | Redis 会话、Milvus 长期语义记忆、RunState 工作记忆；预算估算与压缩 |
+| 模型接入 | OpenAI 兼容接口与 Ollama；按配置优先级和健康状态路由，独立熔断器 |
+| 文件与 Skills | 文件 diff 预览、显式审批后应用；按需加载部署者注册的 Skill |
+| 执行观察 | Bubble Tea TUI、SSE 事件、Prometheus/Grafana、OpenTelemetry/Tempo |
 
-```
-cmd/server/main.go          # 程序入口
-internal/
-├── config/                  # 配置管理
-├── handler/                 # HTTP 处理器
-├── router/                  # 路由注册
-├── agent/                   # 兼容适配器、Planner 和 Reflection Hook
-├── agentloop/               # 模型自主决策与工具调用循环
-├── harness/                 # 单次 Agent Run 生命周期管理
-├── agentcontext/            # 上下文构建、预算估算与压缩
-├── rag/                     # RAG 检索增强生成
-├── memory/                  # Session / Semantic Memory
-├── user/                    # 无认证用户资料与会话归属
-├── tool/                    # 工具系统（注册/路由/内置工具）
-├── intent/                  # 意图识别
-├── llm/                     # LLM 客户端（多模型路由/熔断）
-├── vectordb/                # 向量数据库客户端
-├── cache/                   # Redis 缓存
-├── trace/                   # 链路追踪
-├── etl/                     # 文档 ETL 流水线
-└── model/                   # 数据模型定义
-pkg/common/                  # 公共工具包
-```
+## 核心工作流
+
+### 1. 从请求到答案
+
+![Agent 执行流程](docs/assets/agent-workflow.svg)
+
+AgentHarness 负责单次 Run 的生命周期。默认进入模型驱动的 AgentLoop；调用方可显式启用 Planner-Executor。工具结果回到模型上下文，形成下一轮决策，直到输出答案或触达执行限制。
+
+### 2. 从知识库到引用
+
+![混合检索流程](docs/assets/rag-workflow.svg)
+
+文档导入与检索分开运行。`knowledge_search` 默认并发执行向量和关键词召回，经 RRF 融合与可选重排序，返回可追溯的片段引用。一路召回暂时失败可降级到另一路。
+
+> 图示依据源码快照 `97a45a3`，表示实现关系，不代表本次完成了部署或性能实测。详细实现入口见 [架构与源码导航](docs/ARCHITECTURE.md)。
 
 ## 快速开始
 
@@ -79,7 +64,10 @@ pkg/common/                  # 公共工具包
 ### 本地开发
 
 ```bash
-# 首次使用可修改 .env；Compose 会启动 AgentGo、PostgreSQL、Redis、Milvus、etcd、MinIO、Prometheus、Grafana
+# 首次使用：复制配置模板，并填写可用的模型服务地址和密钥
+cp .env.example .env
+
+# Compose 会启动 AgentGo、PostgreSQL、Redis、Milvus、etcd、MinIO、Prometheus、Grafana
 make docker-run
 curl http://localhost:8080/health
 
@@ -279,7 +267,7 @@ OIDC 默认关闭（`APP_AUTH_ENABLED=false`）：会话、聊天和记忆接口
 ## 设计亮点
 
 1. **三态熔断器**：支持 Closed/Open/HalfOpen 三种状态，保护 LLM 调用链路
-2. **多模型路由**：根据任务复杂度智能选择模型，兼顾成本和效果
+2. **多模型路由**：按配置优先级与健康状态选择模型，目标模型熔断时选择其他健康模型
 3. **统一 Agent Loop**：模型可在同一次 Run 中直接回答，或组合调用知识库、搜索、计算和数据库工具
 4. **混合检索**：Milvus 向量检索 + PostgreSQL 中文分词/BM25 + RRF 融合 + Rerank 重排序
 5. **三层记忆**：Redis Session Memory、Milvus Semantic Memory、单次 Run Working Memory，并支持上下文压缩
@@ -301,6 +289,13 @@ bash benchmarks/run-k6.sh baseline # 记录带元数据的 HTTP 基线报告
 
 完整指标、Golden Dataset 规范、发布门禁与已知边界见 [Benchmark 设计](docs/BENCHMARK.md)。
 本地首轮固定桩与 GPT-5.5 实测见 [Benchmark 结果](docs/BENCHMARK_RESULTS.md)。
+
+## 进一步阅读
+
+- [架构与源码导航](docs/ARCHITECTURE.md)
+- [技术栈与目录结构](docs/DEVELOPMENT.md)
+- [Benchmark 设计](docs/BENCHMARK.md)
+- [Benchmark 结果](docs/BENCHMARK_RESULTS.md)
 
 ## 许可证
 

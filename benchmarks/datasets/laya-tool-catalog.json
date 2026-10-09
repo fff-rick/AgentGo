@@ -1,0 +1,9 @@
+[
+  {"name":"calculator","description":"Perform exact arithmetic, powers, square roots and common mathematical calculations.","selectable":true},
+  {"name":"database_query","description":"Run a bounded read-only SELECT query against the AgentGo PostgreSQL database.","selectable":true},
+  {"name":"file_edit_apply","description":"Apply a previously previewed file proposal only after explicit user approval.","selectable":false},
+  {"name":"file_edit_preview","description":"Prepare and preview an exact local text-file replacement without writing it.","selectable":true},
+  {"name":"file_inspect","description":"List, search or read UTF-8 local files available to the AgentGo process.","selectable":true},
+  {"name":"knowledge_search","description":"Search AgentGo's private document knowledge base and return cited passages.","selectable":true},
+  {"name":"web_search","description":"Search the public internet for current information and source links.","selectable":true}
+]

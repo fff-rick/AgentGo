@@ -33,6 +33,11 @@ type Metrics struct {
 	LLMErrors               *prometheus.CounterVec
 	LLMFallbacks            *prometheus.CounterVec
 	LLMCircuitOpen          *prometheus.CounterVec
+	LayaRequests            *prometheus.CounterVec
+	LayaDuration            *prometheus.HistogramVec
+	LayaFallbacks           *prometheus.CounterVec
+	LayaDisagreements       *prometheus.CounterVec
+	LayaLowConfidence       *prometheus.CounterVec
 	RAGRequests             prometheus.Counter
 	RAGRetrievalDuration    prometheus.Histogram
 	RAGResults              prometheus.Histogram
@@ -84,6 +89,11 @@ func New() *Metrics {
 		LLMErrors:               count("agentgo_llm_errors_total", "Failed LLM calls", "model", "stream"),
 		LLMFallbacks:            count("agentgo_llm_fallbacks_total", "LLM fallback selections", "from", "to"),
 		LLMCircuitOpen:          count("agentgo_llm_circuit_open_total", "Calls rejected by an open model circuit", "model"),
+		LayaRequests:            count("agentgo_laya_requests_total", "Laya decision requests", "decision", "result"),
+		LayaDuration:            hist("agentgo_laya_duration_seconds", "Laya decision request duration", "decision"),
+		LayaFallbacks:           count("agentgo_laya_fallbacks_total", "Laya decisions that fell back to the incumbent", "decision", "reason"),
+		LayaDisagreements:       count("agentgo_laya_disagreements_total", "Laya shadow decisions that disagreed with the incumbent", "decision"),
+		LayaLowConfidence:       count("agentgo_laya_low_confidence_total", "Low-confidence Laya answers", "decision"),
 		RAGRequests:             f.NewCounter(prometheus.CounterOpts{Name: "agentgo_rag_requests_total", Help: "RAG search requests"}),
 		RAGRetrievalDuration:    f.NewHistogram(prometheus.HistogramOpts{Name: "agentgo_rag_retrieval_duration_seconds", Help: "RAG retrieval duration", Buckets: seconds}),
 		RAGResults:              f.NewHistogram(prometheus.HistogramOpts{Name: "agentgo_rag_results_count", Help: "Final RAG result count", Buckets: prometheus.LinearBuckets(0, 1, 21)}),

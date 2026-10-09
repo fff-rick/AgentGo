@@ -13,6 +13,13 @@ llm:
       model: qwen2.5:7b
       priority: 10
 
+laya:
+  enabled: false
+  url: http://127.0.0.1:8000/v1/systemone
+  timeout: 2s
+  mode: shadow
+  min_confidence: 0.6
+
 agent:
   tool_model: qwen-tools
 

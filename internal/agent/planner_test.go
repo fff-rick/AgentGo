@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/enterprise/ai-agent-go/internal/config"
+	"github.com/enterprise/ai-agent-go/internal/laya"
 	"github.com/enterprise/ai-agent-go/internal/llm"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/tool"
@@ -126,8 +129,8 @@ func TestPlanStepAcceptsObjectAndLegacyStringInput(t *testing.T) {
 
 func TestPlannerSelectsAndInjectsOnlyChosenLazyTools(t *testing.T) {
 	client := &plannerLLMClient{responses: []string{
-		`{"tools":["alpha"]}`,
-		`[{"step":1,"description":"use alpha","tool":"alpha","input":{},"depends_on":[]}]`,
+		"选择结果如下：\n```json\n{\"tools\":[\"alpha\"]}\n```",
+		"执行计划如下：\n```json\n[{\"step\":1,\"description\":\"use alpha\",\"tool\":\"alpha\",\"input\":{},\"depends_on\":[]}]\n```",
 		`done`,
 	}}
 	llmRouter := llm.NewRouter(map[string]llm.Client{"planner": client}, []config.ModelConfig{{Name: "planner"}}, config.CBConfig{FailureThreshold: 3, SuccessThreshold: 1})
@@ -186,5 +189,43 @@ func TestPlannerRejectsPlanUsingUnselectedTool(t *testing.T) {
 
 	if _, err := planner.Execute(context.Background(), "task", nil, tool.Scope{}); err == nil || !strings.Contains(err.Error(), "未选择") {
 		t.Fatalf("planner accepted an unselected tool: %v", err)
+	}
+}
+
+func TestPlannerLayaShadowExcludesApplyAndSkipsNegativeConstraints(t *testing.T) {
+	requests := make(chan laya.Request, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request laya.Request
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		requests <- request
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers":{"primary_tool":{"choice":"calculator","abstention":"passed"},"secondary_tool":{"choice":"calculator","abstention":"passed"}},"routing":{"model":"multilingual"}}`))
+	}))
+	defer server.Close()
+	client, err := laya.NewClient(config.LayaConfig{URL: server.URL, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planner := &PlannerAgent{logger: zap.NewNop()}
+	planner.EnableLayaShadow(client, .6)
+	catalog := []tool.CatalogEntry{{Name: "calculator", Description: "math"}, {Name: tool.FileEditApplyName, Description: "write"}}
+	planner.observeLayaToolSelection(context.Background(), "计算 6*7", catalog, []string{"calculator"})
+	select {
+	case request := <-requests:
+		criteria := request.Questions["primary_tool"].Criteria.(map[string]interface{})
+		if _, ok := criteria[tool.FileEditApplyName]; ok || request.MinConfidence == nil || *request.MinConfidence != .6 || len(request.Questions) != 2 {
+			t.Fatalf("unsafe shadow request: %+v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Laya shadow request was not sent")
+	}
+
+	planner.observeLayaToolSelection(context.Background(), "不要调用计算器，只解释乘法", catalog, nil)
+	select {
+	case request := <-requests:
+		t.Fatalf("negative constraint reached Laya: %+v", request)
+	case <-time.After(50 * time.Millisecond):
 	}
 }

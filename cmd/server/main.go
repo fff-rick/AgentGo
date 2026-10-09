@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,8 +29,11 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/etl"
 	"github.com/enterprise/ai-agent-go/internal/handler"
 	"github.com/enterprise/ai-agent-go/internal/harness"
+	"github.com/enterprise/ai-agent-go/internal/intent"
+	"github.com/enterprise/ai-agent-go/internal/laya"
 	"github.com/enterprise/ai-agent-go/internal/llm"
 	"github.com/enterprise/ai-agent-go/internal/memory"
+	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/internal/rag"
 	"github.com/enterprise/ai-agent-go/internal/router"
 	"github.com/enterprise/ai-agent-go/internal/skill"
@@ -172,12 +176,40 @@ func main() {
 	}
 	loop := agentloop.New(modelRouter, toolRouter)
 	planner := agent.NewPlannerAgent(modelRouter, toolRouter, logger)
+	var observeLayaIntent func(context.Context, string, []model.LLMMessage)
+	if cfg.Laya.Enabled {
+		switch {
+		case strings.ToLower(strings.TrimSpace(cfg.Laya.Mode)) != "shadow":
+			logger.Warn("Laya live 模式尚未开放，保持现有大模型决策", zap.String("mode", cfg.Laya.Mode))
+		case cfg.Laya.MinConfidence < 0 || cfg.Laya.MinConfidence > 1:
+			logger.Warn("Laya 最低置信度无效，影子模式未启用", zap.Float64("min_confidence", cfg.Laya.MinConfidence))
+		default:
+			layaClient, layaErr := laya.NewClient(cfg.Laya)
+			if layaErr != nil {
+				logger.Warn("初始化 Laya 失败，保持现有大模型决策", zap.Error(layaErr))
+			} else {
+				warmupCtx, cancelWarmup := context.WithTimeout(context.Background(), 20*time.Second)
+				warmupErr := laya.Warmup(warmupCtx, cfg.Laya)
+				cancelWarmup()
+				if warmupErr != nil {
+					logger.Warn("Laya 启动预热失败，影子模式未启用", zap.Error(warmupErr))
+				} else {
+					planner.EnableLayaShadow(layaClient, cfg.Laya.MinConfidence)
+					observeLayaIntent = intent.NewLayaShadow(layaClient, cfg.Laya.MinConfidence, logger).Observe
+					logger.Info("Laya Planner 工具选择和意图识别影子模式已启用", zap.Float64("min_confidence", cfg.Laya.MinConfidence))
+				}
+			}
+		}
+	}
 	agentHarness := harness.New(loop, planner, contextBuilder, sessionManager, memoryExtractor, toolRouter, hooks, cfg.Agent.MaxIterations, cfg.Tools.MaxDiscoveryCalls, cfg.Agent.DefaultTimeout, logger)
 	if skillRegistry != nil && skillRegistry.Count() > 0 {
 		agentHarness.SetSkills(skillRegistry)
 	}
 	agentHarness.SetMemoryJobs(memoryJobs)
 	agentHarness.SetPrecompactor(precompactor)
+	if observeLayaIntent != nil {
+		agentHarness.SetIntentObserver(observeLayaIntent)
+	}
 	orchestrator := agent.NewOrchestrator(agentHarness)
 
 	// ======================== 6. 初始化 HTTP 处理器 ========================
