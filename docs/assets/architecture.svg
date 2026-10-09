@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img"><title>AgentGo / Architecture</title><desc>Go-native agent runtime · tools, knowledge, memory &amp; observability</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#64748b"/></marker></defs><style>text{font-family:DejaVu Sans,sans-serif}.title{font-size:30px;font-weight:700;fill:#172033}.sub{font-size:14px;fill:#64748b}.label{font-size:18px;font-weight:700;fill:#172033}.detail{font-size:13px;fill:#526176}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1200" height="760" rx="20" fill="#f7f9fc"/>
+<text x="40" y="54" class="title">AgentGo / Architecture</text>
+<text x="40" y="82" class="sub">Go-native agent runtime · tools, knowledge, memory &amp; observability</text>
+<rect x="40" y="120" width="245" height="105" rx="12" fill="#edf5ff" stroke="#5b8ed8"/>
+<text x="60" y="152" class="label">Clients</text>
+<text x="60" y="178" class="detail">Bubble Tea TUI / HTTP API</text>
+<text x="60" y="199" class="detail">Streaming events via SSE</text>
+<rect x="335" y="120" width="300" height="105" rx="12" fill="#edf5ff" stroke="#5b8ed8"/>
+<text x="355" y="152" class="label">Gin + Handlers</text>
+<text x="355" y="178" class="detail">Sessions / Chat / Documents</text>
+<text x="355" y="199" class="detail">Optional OIDC authentication</text>
+<rect x="685" y="120" width="475" height="105" rx="12" fill="#fff6e7" stroke="#d9a148"/>
+<text x="705" y="152" class="label">Observability</text>
+<text x="705" y="178" class="detail">Prometheus → Grafana</text>
+<text x="705" y="199" class="detail">OpenTelemetry → Tempo</text>
+<path class="edge" d="M285 172 H335"/>
+<rect x="335" y="270" width="825" height="110" rx="12" fill="#ecf8f3" stroke="#59a78c"/>
+<text x="355" y="302" class="label">AgentHarness</text>
+<text x="355" y="328" class="detail">Context builder · token budget · compression · Skills</text>
+<text x="355" y="349" class="detail">Default AgentLoop / explicit Planner-Executor · optional reflection</text>
+<path class="edge" d="M485 225 V270"/>
+<rect x="40" y="270" width="245" height="110" rx="12" fill="#f3efff" stroke="#9b80cf"/>
+<text x="60" y="302" class="label">Memory</text>
+<text x="60" y="328" class="detail">Redis session history</text>
+<text x="60" y="349" class="detail">Milvus semantic memory</text>
+<text x="60" y="370" class="detail">RunState working memory</text>
+<path class="edge" d="M285 325 H335"/>
+<rect x="40" y="435" width="335" height="120" rx="12" fill="#edf5ff" stroke="#5b8ed8"/>
+<text x="60" y="467" class="label">LLM Router</text>
+<text x="60" y="493" class="detail">Priority + model health</text>
+<text x="60" y="514" class="detail">OpenAI-compatible / Ollama</text>
+<text x="60" y="535" class="detail">Per-model circuit breaker</text>
+<rect x="425" y="435" width="335" height="120" rx="12" fill="#ecf8f3" stroke="#59a78c"/>
+<text x="445" y="467" class="label">Tool Registry + Router</text>
+<text x="445" y="493" class="detail">Lazy schema discovery</text>
+<text x="445" y="514" class="detail">Knowledge / Search / SQL / Calc</text>
+<text x="445" y="535" class="detail">File preview → approval → apply</text>
+<rect x="810" y="435" width="350" height="120" rx="12" fill="#f3efff" stroke="#9b80cf"/>
+<text x="830" y="467" class="label">RAG Pipeline</text>
+<text x="830" y="493" class="detail">Milvus vector + PostgreSQL BM25</text>
+<text x="830" y="514" class="detail">RRF fusion + optional reranking</text>
+<text x="830" y="535" class="detail">Document references</text>
+<path class="edge" d="M485 380 V410 H207 V435"/>
+<path class="edge" d="M592 380 V435"/>
+<path class="edge" d="M760 495 H810"/>
+<rect x="40" y="605" width="335" height="95" rx="12" fill="#edf5ff" stroke="#5b8ed8"/>
+<text x="60" y="637" class="label">Model backends</text>
+<text x="60" y="663" class="detail">Configured providers / local models</text>
+<rect x="425" y="605" width="335" height="95" rx="12" fill="#ecf8f3" stroke="#59a78c"/>
+<text x="445" y="637" class="label">External tools</text>
+<text x="445" y="663" class="detail">SearXNG / read-only SQL / files</text>
+<rect x="810" y="605" width="350" height="95" rx="12" fill="#f3efff" stroke="#9b80cf"/>
+<text x="830" y="637" class="label">Document ingestion</text>
+<text x="830" y="663" class="detail">MD / PDF / DOCX / XLSX → ETL</text>
+<path class="edge" d="M207 555 V605"/>
+<path class="edge" d="M592 555 V605"/>
+<path class="edge" d="M985 605 V555"/>
+<text x="40" y="738" class="sub">Source snapshot: 97a45a3 · overview of dependencies; not a benchmark or deployment claim.</text>
+</svg>

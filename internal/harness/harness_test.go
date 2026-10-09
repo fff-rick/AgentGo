@@ -89,6 +89,29 @@ func TestHarnessDoesNotFailAnswerWhenMemoryExtractionFails(t *testing.T) {
 	}
 }
 
+func TestHarnessIntentObserverReceivesBuiltConversation(t *testing.T) {
+	messages := []model.LLMMessage{{Role: "assistant", Content: "previous"}, {Role: "user", Content: "current"}}
+	h := New(&loopStub{}, nil, contextStub{result: &agentcontext.AgentContext{Messages: messages}}, &sessionsStub{}, nil, toolsStub{}, nil, 2, 4, time.Second, zap.NewNop())
+	observed := make(chan []model.LLMMessage, 1)
+	h.SetIntentObserver(func(_ context.Context, input string, history []model.LLMMessage) {
+		if input != "current" {
+			t.Errorf("input=%q", input)
+		}
+		observed <- history
+	})
+	if _, err := h.Run(context.Background(), &RunRequest{Session: &model.Session{ID: "session", UserID: "user"}, Message: "current"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case history := <-observed:
+		if len(history) != 2 || history[0].Content != "previous" {
+			t.Fatalf("history=%+v", history)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("intent observer was not called")
+	}
+}
+
 type loopStub struct{ input agentloop.Input }
 
 func (l *loopStub) Run(_ context.Context, input agentloop.Input) (*agentloop.Result, error) {

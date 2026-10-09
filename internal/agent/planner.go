@@ -2,13 +2,16 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/enterprise/ai-agent-go/internal/laya"
 	"github.com/enterprise/ai-agent-go/internal/llm"
 	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/model"
@@ -60,9 +63,17 @@ func (s PlanStep) toolInput() string {
 // PlannerAgent 规划型 Agent。
 // 先将复杂任务分解为子步骤计划，然后按照依赖关系逐步执行。
 type PlannerAgent struct {
-	router     *llm.Router
-	toolRouter *tool.Router
-	logger     *zap.Logger
+	router            *llm.Router
+	toolRouter        *tool.Router
+	logger            *zap.Logger
+	layaClient        *laya.Client
+	layaMinConfidence float64
+}
+
+// EnableLayaShadow observes Planner tool selection without changing it.
+func (p *PlannerAgent) EnableLayaShadow(client *laya.Client, minConfidence float64) {
+	p.layaClient = client
+	p.layaMinConfidence = minConfidence
 }
 
 // NewPlannerAgent 创建规划 Agent
@@ -194,7 +205,7 @@ func (p *PlannerAgent) generatePlan(ctx context.Context, task string, history []
 	}
 
 	var steps []PlanStep
-	if err := json.Unmarshal([]byte(resp.Content), &steps); err != nil {
+	if err := decodePlannerJSON(resp.Content, &steps); err != nil {
 		return nil, fmt.Errorf("解析执行计划失败: %w", err)
 	}
 
@@ -223,7 +234,7 @@ func (p *PlannerAgent) planToolDefinitions(ctx context.Context, task string, his
 	var selection struct {
 		Tools []string `json:"tools"`
 	}
-	if err := json.Unmarshal([]byte(resp.Content), &selection); err != nil {
+	if err := decodePlannerJSON(resp.Content, &selection); err != nil {
 		return nil, fmt.Errorf("解析工具选择失败: %w", err)
 	}
 	if len(selection.Tools) > p.toolRouter.LazyLoadThreshold() {
@@ -243,6 +254,7 @@ func (p *PlannerAgent) planToolDefinitions(ctx context.Context, task string, his
 		}
 		seen[name] = struct{}{}
 	}
+	p.observeLayaToolSelection(ctx, task, catalog, selection.Tools)
 	if len(selection.Tools) == 0 {
 		return nil, nil
 	}
@@ -263,6 +275,142 @@ func (p *PlannerAgent) planToolDefinitions(ctx context.Context, task string, his
 		return nil, fmt.Errorf("加载工具不完整: 选择 %d 个，获得 %d 个", len(selection.Tools), len(selectedDefinitions))
 	}
 	return selectedDefinitions, nil
+}
+
+func decodePlannerJSON(value string, target any) error {
+	var lastErr error
+	for index, candidate := range value {
+		if candidate != '{' && candidate != '[' {
+			continue
+		}
+		var raw json.RawMessage
+		if err := json.NewDecoder(strings.NewReader(value[index:])).Decode(&raw); err != nil {
+			lastErr = err
+			continue
+		}
+		if err := json.Unmarshal(raw, target); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("响应中没有 JSON object 或 array")
+	}
+	return lastErr
+}
+
+var layaFallbackMarkers = []string{
+	"不要", "不得", "禁止", "无需", "不需要", "别调用", "别使用", "别访问",
+	"do not", "don't", "must not", "without using", "never use", "no access",
+}
+
+func (p *PlannerAgent) observeLayaToolSelection(ctx context.Context, task string, catalog []tool.CatalogEntry, incumbent []string) {
+	if p.layaClient == nil {
+		return
+	}
+	taskHash := taskSHA256(task)
+	lowerTask := strings.ToLower(task)
+	for _, marker := range layaFallbackMarkers {
+		if strings.Contains(lowerTask, marker) {
+			metrics.Default.LayaFallbacks.WithLabelValues("planner_tool_selection", "policy").Inc()
+			p.logger.Info("Laya Planner 影子选择回退", zap.String("reason", "policy"), zap.String("task_sha256", taskHash))
+			return
+		}
+	}
+	criteria := map[string]string{"none": "No external tool is needed for this request."}
+	for _, candidate := range catalog {
+		if candidate.Name != tool.FileEditApplyName {
+			criteria[candidate.Name] = candidate.Description
+		}
+	}
+	if len(criteria) == 1 {
+		metrics.Default.LayaFallbacks.WithLabelValues("planner_tool_selection", "no_candidates").Inc()
+		p.logger.Info("Laya Planner 影子选择回退", zap.String("reason", "no_candidates"), zap.String("task_sha256", taskHash))
+		return
+	}
+	go p.compareLayaToolSelection(context.WithoutCancel(ctx), task, taskHash, criteria, append([]string(nil), incumbent...))
+}
+
+func (p *PlannerAgent) compareLayaToolSelection(ctx context.Context, task, taskHash string, criteria map[string]string, incumbent []string) {
+	response, err := p.layaClient.Predict(ctx, "planner_tool_selection", laya.Request{
+		State: map[string]string{"request": task},
+		Questions: map[string]laya.Question{
+			"primary_tool": {
+				Type: "choice", Instructions: "Which single tool is most important to complete `request`? Choose none when no tool is needed.", Criteria: criteria,
+			},
+			"secondary_tool": {
+				Type: "choice", Instructions: "Which additional tool is required after the primary tool? Choose none when one or no tool is sufficient.", Criteria: criteria,
+			},
+		},
+		MinConfidence: &p.layaMinConfidence,
+	})
+	if err != nil {
+		metrics.Default.LayaFallbacks.WithLabelValues("planner_tool_selection", "error").Inc()
+		p.logger.Warn("Laya Planner 影子选择失败", zap.String("task_sha256", taskHash), zap.Error(err))
+		return
+	}
+	selected := make([]string, 0, 2)
+	for _, id := range []string{"primary_tool", "secondary_tool"} {
+		answer, ok := response.Answers[id]
+		if !ok || answer.Abstention != "passed" || answer.LowConfidence != nil && *answer.LowConfidence {
+			metrics.Default.LayaFallbacks.WithLabelValues("planner_tool_selection", "low_confidence").Inc()
+			p.logger.Info("Laya Planner 影子选择回退",
+				zap.String("reason", "low_confidence"),
+				zap.String("question", id),
+				zap.String("task_sha256", taskHash),
+				zap.String("choice", answer.Choice),
+				zap.Any("confidence", answer.Confidence),
+				zap.Any("answer_confidence", answer.AnswerConfidence),
+				zap.String("abstention", answer.Abstention),
+			)
+			return
+		}
+		if _, allowed := criteria[answer.Choice]; !allowed {
+			metrics.Default.LayaFallbacks.WithLabelValues("planner_tool_selection", "invalid_response").Inc()
+			p.logger.Warn("Laya Planner 影子选择回退", zap.String("reason", "invalid_response"), zap.String("question", id), zap.String("task_sha256", taskHash))
+			return
+		}
+		if answer.Choice != "none" {
+			selected = append(selected, answer.Choice)
+		}
+	}
+	selected = uniqueSorted(selected)
+	incumbent = uniqueSorted(incumbent)
+	agree := strings.Join(selected, "\x00") == strings.Join(incumbent, "\x00")
+	if !agree {
+		metrics.Default.LayaDisagreements.WithLabelValues("planner_tool_selection").Inc()
+	}
+	primary := response.Answers["primary_tool"]
+	secondary := response.Answers["secondary_tool"]
+	p.logger.Info("Laya Planner 影子选择完成",
+		zap.String("task_sha256", taskHash),
+		zap.Bool("agree", agree),
+		zap.Strings("laya_tools", selected),
+		zap.Strings("llm_tools", incumbent),
+		zap.String("checkpoint", response.Routing.Model),
+		zap.String("primary_choice", primary.Choice),
+		zap.Any("primary_confidence", primary.Confidence),
+		zap.Any("primary_answer_confidence", primary.AnswerConfidence),
+		zap.String("secondary_choice", secondary.Choice),
+		zap.Any("secondary_confidence", secondary.Confidence),
+		zap.Any("secondary_answer_confidence", secondary.AnswerConfidence),
+	)
+}
+
+func taskSHA256(task string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(task))) }
+
+func uniqueSorted(names []string) []string {
+	seen := make(map[string]struct{}, len(names))
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		if _, ok := seen[name]; !ok {
+			seen[name] = struct{}{}
+			result = append(result, name)
+		}
+	}
+	sort.Strings(result)
+	return result
 }
 
 // summarize 汇总步骤执行结果，生成最终答案

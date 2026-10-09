@@ -97,3 +97,19 @@ func TestLoadEmbeddingEnv(t *testing.T) {
 		t.Fatal("embedding environment override was not loaded")
 	}
 }
+
+func TestLoadLayaEnv(t *testing.T) {
+	t.Setenv("APP_LAYA_ENABLED", "true")
+	t.Setenv("APP_LAYA_URL", "http://localhost:9000/v1/systemone")
+	t.Setenv("APP_LAYA_API_KEY", "test-secret")
+	t.Setenv("APP_LAYA_TIMEOUT", "750ms")
+	t.Setenv("APP_LAYA_MODE", "live")
+	t.Setenv("APP_LAYA_MIN_CONFIDENCE", "0.75")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Laya.Enabled || cfg.Laya.URL != "http://localhost:9000/v1/systemone" || cfg.Laya.APIKey != "test-secret" || cfg.Laya.Timeout != 750*time.Millisecond || cfg.Laya.Mode != "live" || cfg.Laya.MinConfidence != .75 {
+		t.Fatalf("unexpected Laya config: %+v", cfg.Laya)
+	}
+}

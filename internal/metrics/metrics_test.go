@@ -1,12 +1,12 @@
 package metrics
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"net/http/httptest"
 )
 
 func TestIndependentRegistryAndMetricFamilies(t *testing.T) {
@@ -16,6 +16,10 @@ func TestIndependentRegistryAndMetricFamilies(t *testing.T) {
 	m.LLMTTFT.WithLabelValues("test-model").Observe(.2)
 	m.ContextCompressionRatio.Observe(.5)
 	m.DependencyDuration.WithLabelValues("redis", "get").Observe(time.Second.Seconds())
+	m.LayaRequests.WithLabelValues("tool_selection", "success").Inc()
+	m.LayaDuration.WithLabelValues("tool_selection").Observe(.1)
+	m.LayaFallbacks.WithLabelValues("planner_tool_selection", "policy").Inc()
+	m.LayaDisagreements.WithLabelValues("planner_tool_selection").Inc()
 	r := httptest.NewRecorder()
 	promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{}).ServeHTTP(r, httptest.NewRequest("GET", "/metrics", nil))
 	if r.Code != 200 {
@@ -27,6 +31,10 @@ func TestIndependentRegistryAndMetricFamilies(t *testing.T) {
 		`agentgo_llm_ttft_seconds_count{model="test-model"} 1`,
 		`agentgo_context_compression_ratio_count 1`,
 		`agentgo_dependency_duration_seconds_count{dependency="redis",operation="get"} 1`,
+		`agentgo_laya_requests_total{decision="tool_selection",result="success"} 1`,
+		`agentgo_laya_duration_seconds_count{decision="tool_selection"} 1`,
+		`agentgo_laya_fallbacks_total{decision="planner_tool_selection",reason="policy"} 1`,
+		`agentgo_laya_disagreements_total{decision="planner_tool_selection"} 1`,
 		`go_goroutines`, `process_resident_memory_bytes`,
 	} {
 		if !strings.Contains(r.Body.String(), want) {

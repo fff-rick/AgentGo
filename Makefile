@@ -1,4 +1,4 @@
-.PHONY: build run tui test test-milvus benchmark benchmark-e2e benchmark-sse benchmark-intent benchmark-retrieval lint clean docker-build docker-run docker-stop docker-logs fmt vet
+.PHONY: build run tui test test-milvus benchmark benchmark-e2e benchmark-sse benchmark-intent benchmark-laya benchmark-laya-shadow benchmark-retrieval lint clean docker-build docker-run docker-stop docker-logs fmt vet
 
 APP_NAME := ai-agent-go
 APP_IMAGE ?= $(APP_NAME):local
@@ -52,6 +52,12 @@ benchmark-sse:
 
 benchmark-intent:
 	go run ./cmd/benchmark-intent
+
+benchmark-laya:
+	go run ./cmd/benchmark-laya
+
+benchmark-laya-shadow:
+	bash benchmarks/run-laya-shadow.sh
 
 benchmark-retrieval:
 	go run ./cmd/benchmark-retrieval

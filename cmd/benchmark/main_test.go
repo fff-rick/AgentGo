@@ -69,6 +69,46 @@ func TestExecuteMultiTurn(t *testing.T) {
 	}
 }
 
+func TestExecuteForwardsModeAndToolAllowlist(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/sessions" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"session_id": "session-1"}})
+			return
+		}
+		var request chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		tools, ok := request.Options["tools"].([]any)
+		if request.Options["mode"] != "planner" || !ok || len(tools) != 1 || tools[0] != "calculator" {
+			t.Fatalf("options=%+v", request.Options)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"content": "42"}})
+	}))
+	defer server.Close()
+	result, err := execute(context.Background(), server.Client(), server.URL+"/api/v1/chat", testCase{
+		ID: "planner", Message: "6*7", Mode: "planner", Tools: []string{"calculator"}, Expected: assertion{KeywordsAll: []string{"42"}},
+	}, 1)
+	if err != nil || !result.Passed || len(result.TaskSHA256) != 64 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestPlannerLayaShadowSeedDataset(t *testing.T) {
+	cases, err := loadCases("../../benchmarks/datasets/planner-laya-shadow.seed.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 10 {
+		t.Fatalf("cases=%d, want 10", len(cases))
+	}
+	for _, tc := range cases {
+		if tc.Mode != "planner" || tc.Tools == nil {
+			t.Fatalf("unsafe shadow case: %+v", tc)
+		}
+	}
+}
+
 func TestBuildReport(t *testing.T) {
 	rep := buildReport(testTime, testDuration, []caseResult{
 		{Category: "tool", Success: true, Passed: true, LatencyMS: 10, ToolEvaluated: true, ToolPassed: true},

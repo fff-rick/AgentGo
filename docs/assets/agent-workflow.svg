@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="665" viewBox="0 0 1200 665" role="img"><title>01 / Agent execution</title><desc>Model decides whether to answer directly or request tools. Each run is bounded.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#64748b"/></marker></defs><style>text{font-family:DejaVu Sans,sans-serif}.title{font-size:30px;font-weight:700;fill:#172033}.sub{font-size:14px;fill:#64748b}.label{font-size:18px;font-weight:700;fill:#172033}.detail{font-size:13px;fill:#526176}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1200" height="665" rx="20" fill="#f7f9fc"/>
+<text x="40" y="54" class="title">01 / Agent execution</text>
+<text x="40" y="82" class="sub">Model decides whether to answer directly or request tools. Each run is bounded.</text>
+<rect x="40" y="125" width="300" height="100" rx="12" fill="#f3efff" stroke="#9b80cf"/>
+<text x="60" y="157" class="label">Build context</text>
+<text x="60" y="183" class="detail">Session + semantic memory</text>
+<text x="60" y="204" class="detail">Budget / compression / Skills</text>
+<rect x="435" y="125" width="300" height="100" rx="12" fill="#edf5ff" stroke="#5b8ed8"/>
+<text x="455" y="157" class="label">Call model</text>
+<text x="455" y="183" class="detail">Priority + health-based routing</text>
+<text x="455" y="204" class="detail">Stream supported events</text>
+<rect x="835" y="125" width="325" height="100" rx="12" fill="#ecf8f3" stroke="#59a78c"/>
+<text x="855" y="157" class="label">Final answer</text>
+<text x="855" y="183" class="detail">No further tool calls</text>
+<text x="855" y="204" class="detail">References + response</text>
+<path class="edge" d="M340 175 H435"/>
+<path class="edge" d="M735 175 H835"/>
+<rect x="435" y="315" width="300" height="110" rx="12" fill="#fff6e7" stroke="#d9a148"/>
+<text x="455" y="347" class="label">Tool calls</text>
+<text x="455" y="373" class="detail">Discover / load tool schemas</text>
+<text x="455" y="394" class="detail">Validate scope and arguments</text>
+<path class="edge" d="M585 225 V315"/>
+<rect x="835" y="315" width="325" height="110" rx="12" fill="#ecf8f3" stroke="#59a78c"/>
+<text x="855" y="347" class="label">Execute tools</text>
+<text x="855" y="373" class="detail">Independent calls may run together</text>
+<text x="855" y="394" class="detail">Results added to model messages</text>
+<path class="edge" d="M735 370 H835"/>
+<path class="edge" d="M998 315 V265 H765 V145 H735"/>
+<text x="790" y="253" class="sub">Continue loop</text>
+<rect x="40" y="315" width="300" height="110" rx="12" fill="#f3efff" stroke="#9b80cf"/>
+<text x="60" y="347" class="label">Explicit Planner mode</text>
+<text x="60" y="373" class="detail">Caller selects options.mode</text>
+<text x="60" y="394" class="detail">Planner-Executor alternative</text>
+<rect x="40" y="485" width="1120" height="100" rx="12" fill="#edf5ff" stroke="#5b8ed8"/>
+<text x="60" y="517" class="label">Lifecycle &amp; limits</text>
+<text x="60" y="543" class="detail">Max iterations / timeout / cancellation · optional reflection · persist session &amp; enqueue memory jobs</text>
+<text x="60" y="564" class="detail">SSE reports stages, tools, references and backend-provided reasoning; no fabricated reasoning.</text>
+</svg>

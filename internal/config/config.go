@@ -18,6 +18,7 @@ import (
 type Config struct {
 	Server     ServerConfig     `mapstructure:"server"`
 	LLM        LLMConfig        `mapstructure:"llm"`
+	Laya       LayaConfig       `mapstructure:"laya"`
 	Redis      RedisConfig      `mapstructure:"redis"`
 	Milvus     MilvusConfig     `mapstructure:"milvus"`
 	Embedding  EmbeddingConfig  `mapstructure:"embedding"`
@@ -48,6 +49,17 @@ type LLMConfig struct {
 	Models         []ModelConfig `mapstructure:"models"`
 	RequestTimeout time.Duration `mapstructure:"request_timeout"`
 	CircuitBreaker CBConfig      `mapstructure:"circuit_breaker"`
+}
+
+// LayaConfig controls the optional Laya decision service. Runtime integration
+// currently accepts shadow mode only.
+type LayaConfig struct {
+	Enabled       bool          `mapstructure:"enabled"`
+	URL           string        `mapstructure:"url"`
+	APIKey        string        `mapstructure:"api_key"`
+	Timeout       time.Duration `mapstructure:"timeout"`
+	Mode          string        `mapstructure:"mode"`
+	MinConfidence float64       `mapstructure:"min_confidence"`
 }
 
 // ModelConfig 单个模型的配置
@@ -283,6 +295,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("llm.circuit_breaker.failure_threshold", 5)
 	v.SetDefault("llm.circuit_breaker.success_threshold", 3)
 	v.SetDefault("llm.circuit_breaker.timeout", "30s")
+
+	// Laya defaults to a local sidecar but remains inactive until explicitly enabled.
+	v.SetDefault("laya.enabled", false)
+	v.SetDefault("laya.url", "http://127.0.0.1:8000/v1/systemone")
+	v.SetDefault("laya.api_key", "")
+	v.SetDefault("laya.timeout", "2s")
+	v.SetDefault("laya.mode", "shadow")
+	v.SetDefault("laya.min_confidence", 0.6)
 
 	// Redis 默认配置
 	v.SetDefault("redis.addr", "localhost:6379")

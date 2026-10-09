@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img"><title>02 / Hybrid knowledge retrieval</title><desc>Knowledge is fetched when the model calls knowledge_search; ingestion is a separate path.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#64748b"/></marker></defs><style>text{font-family:DejaVu Sans,sans-serif}.title{font-size:30px;font-weight:700;fill:#172033}.sub{font-size:14px;fill:#64748b}.label{font-size:18px;font-weight:700;fill:#172033}.detail{font-size:13px;fill:#526176}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1200" height="760" rx="20" fill="#f7f9fc"/>
+<text x="40" y="54" class="title">02 / Hybrid knowledge retrieval</text>
+<text x="40" y="82" class="sub">Knowledge is fetched when the model calls knowledge_search; ingestion is a separate path.</text>
+<rect x="40" y="125" width="1120" height="95" rx="12" fill="#f3efff" stroke="#9b80cf"/>
+<text x="60" y="157" class="label">Document ingestion</text>
+<text x="60" y="183" class="detail">MD / PDF / DOCX / XLSX → parse &amp; chunk → embedding + vector upsert / keyword index</text>
+<rect x="40" y="290" width="260" height="100" rx="12" fill="#edf5ff" stroke="#5b8ed8"/>
+<text x="60" y="322" class="label">knowledge_search</text>
+<text x="60" y="348" class="detail">Query + top_k</text>
+<text x="60" y="369" class="detail">Agent-selected tool call</text>
+<rect x="360" y="255" width="335" height="90" rx="12" fill="#f3efff" stroke="#9b80cf"/>
+<text x="380" y="287" class="label">Vector recall</text>
+<text x="380" y="313" class="detail">Embedding → Milvus</text>
+<rect x="360" y="395" width="335" height="90" rx="12" fill="#f3efff" stroke="#9b80cf"/>
+<text x="380" y="427" class="label">Keyword recall</text>
+<text x="380" y="453" class="detail">Chinese tokenization → PG BM25</text>
+<path class="edge" d="M300 330 H330 V300 H360"/>
+<path class="edge" d="M330 330 V440 H360"/>
+<rect x="795" y="320" width="365" height="120" rx="12" fill="#ecf8f3" stroke="#59a78c"/>
+<text x="815" y="352" class="label">RRF fusion</text>
+<text x="815" y="378" class="detail">Combine ranked candidates</text>
+<text x="815" y="399" class="detail">One recall path can degrade</text>
+<text x="815" y="420" class="detail">Both unavailable → error</text>
+<path class="edge" d="M695 300 H745 V355 H795"/>
+<path class="edge" d="M695 440 H745 V405 H795"/>
+<rect x="795" y="520" width="365" height="100" rx="12" fill="#fff6e7" stroke="#d9a148"/>
+<text x="815" y="552" class="label">Optional LLM rerank</text>
+<text x="815" y="578" class="detail">Relevance scoring + top-K</text>
+<text x="815" y="599" class="detail">On rerank failure: original order</text>
+<path class="edge" d="M978 440 V520"/>
+<rect x="360" y="520" width="335" height="100" rx="12" fill="#edf5ff" stroke="#5b8ed8"/>
+<text x="380" y="552" class="label">Return references</text>
+<text x="380" y="578" class="detail">Chunk content + source metadata</text>
+<text x="380" y="599" class="detail">Tool result → model response</text>
+<path class="edge" d="M795 570 H695"/>
+<text x="40" y="706" class="sub">Embeddings for documents and semantic memory must use consistent models and dimensions.</text>
+</svg>

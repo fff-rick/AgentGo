@@ -59,6 +59,7 @@ type AgentHarness struct {
 	maxDiscoveryCalls int
 	timeout           time.Duration
 	logger            *zap.Logger
+	observeIntent     func(context.Context, string, []model.LLMMessage)
 }
 
 func (h *AgentHarness) SetMemoryJobs(jobs interface {
@@ -97,6 +98,10 @@ func (h *AgentHarness) SetPrecompactor(precompactor *agentcontext.Precompactor) 
 
 func (h *AgentHarness) SetSkills(skills *skill.Registry) {
 	h.skills = skills
+}
+
+func (h *AgentHarness) SetIntentObserver(observer func(context.Context, string, []model.LLMMessage)) {
+	h.observeIntent = observer
 }
 
 func (h *AgentHarness) ValidateAllowedTools(names []string) error {
@@ -157,6 +162,10 @@ func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (runResult *Run
 	})
 	if err != nil {
 		return nil, err
+	}
+	if h.observeIntent != nil {
+		messages := append([]model.LLMMessage(nil), agentContext.Messages...)
+		go h.observeIntent(context.WithoutCancel(ctx), req.Message, messages)
 	}
 	metrics.Default.ContextTokens.Observe(float64(agentContext.EstimatedTokens))
 	state := &agentloop.RunState{RunID: uuid.NewString(), UserID: session.UserID, SessionID: session.ID, Task: req.Message}
