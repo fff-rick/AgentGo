@@ -79,7 +79,7 @@ func TestStreamReceivesAnswerDeltas(t *testing.T) {
 	defer server.Close()
 
 	events := make(chan streamEvent, 8)
-	stream(context.Background(), server.URL, "session", "query", "planner", nil, events)
+	stream(context.Background(), server.URL, "session", "query", "planner", nil, nil, events)
 	var chunks []string
 	for raw := range events {
 		if raw.name != observe.TypeAnswerDelta {
@@ -117,11 +117,37 @@ func TestStreamSendsApprovedProposal(t *testing.T) {
 	}))
 	defer server.Close()
 	events := make(chan streamEvent, 4)
-	stream(context.Background(), server.URL, "session", "approve", "", []string{proposalID}, events)
+	stream(context.Background(), server.URL, "session", "approve", "", []string{proposalID}, nil, events)
 	for range events {
 	}
 	if len(got) != 1 || got[0] != proposalID {
 		t.Fatalf("approved_proposals=%v", got)
+	}
+}
+
+func TestStreamSendsConversationSkill(t *testing.T) {
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Options struct {
+				Skills []string `json:"skills"`
+			} `json:"options"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		got = request.Options.Skills
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: done\ndata: {}\n\n")
+	}))
+	defer server.Close()
+
+	events := make(chan streamEvent, 4)
+	stream(context.Background(), server.URL, "session", "query", "", nil, []string{"skill-demo"}, events)
+	for range events {
+	}
+	if len(got) != 1 || got[0] != "skill-demo" {
+		t.Fatalf("skills=%v", got)
 	}
 }
 
@@ -188,5 +214,61 @@ func TestApproveCommandRejectsInvalidID(t *testing.T) {
 	m = updated.(*model)
 	if cmd != nil || len(m.logs) != 1 || !strings.Contains(m.logs[0], "格式无效") {
 		t.Fatalf("logs=%v cmd=%v", m.logs, cmd)
+	}
+}
+
+func TestSkillCommandBindsAndClearsConversationSkill(t *testing.T) {
+	m := &model{input: "/SKILL skill-demo"}
+	updated, cmd := m.submit()
+	m = updated.(*model)
+	if cmd != nil || len(m.skills) != 1 || m.skills[0] != "skill-demo" {
+		t.Fatalf("skills=%v cmd=%v", m.skills, cmd)
+	}
+
+	m.input = "/skill clear"
+	updated, cmd = m.submit()
+	m = updated.(*model)
+	if cmd != nil || m.skills != nil {
+		t.Fatalf("skills=%v cmd=%v", m.skills, cmd)
+	}
+}
+
+func TestClearStartsConversationWithoutBoundSkill(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":0,"message":"success","data":{"session_id":"new-session"}}`)
+	}))
+	defer server.Close()
+
+	m := &model{baseURL: server.URL, session: "old-session", skills: []string{"skill-demo"}, input: "/clear"}
+	updated, cmd := m.submit()
+	m = updated.(*model)
+	if cmd != nil || m.session != "new-session" || m.skills != nil {
+		t.Fatalf("session=%q skills=%v cmd=%v", m.session, m.skills, cmd)
+	}
+}
+
+func TestCreateSessionExplainsWrongAPIEndpoint(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		want       string
+	}{
+		{name: "not found", statusCode: http.StatusNotFound, body: "404 page not found", want: "HTTP 404: 404 page not found"},
+		{name: "different service", statusCode: http.StatusOK, body: `{"message":"All is well"}`, want: "响应缺少 session_id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer server.Close()
+			_, err := createSession(context.Background(), server.URL, "user")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error=%v, want %q", err, tt.want)
+			}
+		})
 	}
 }

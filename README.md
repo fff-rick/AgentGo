@@ -84,12 +84,19 @@ Trace 由 OpenTelemetry 导出到 Tempo（默认 `http://localhost:3200`），�
 
 Embedding 默认使用 Ollama。配置 `APP_EMBEDDING_API_KEY` 后，改用 OpenAI 兼容的 `/embeddings` 接口；`APP_EMBEDDING_BASE_URL` 可填写 `/v1` 基础地址或完整 `/v1/embeddings` 地址。切换模型时需同时确认 `APP_EMBEDDING_DIMENSION` 和 `APP_MILVUS_DIMENSION`，并为文档和长期记忆配置新的 Milvus collection（`APP_MILVUS_COLLECTION_NAME`、`APP_MEMORY_SEMANTIC_COLLECTION`）。不同模型生成的同维向量也不能混用；旧文档需要重新导入。
 
-### 可观察 TUI
+### CLI / 可观察 TUI
 
 服务启动后，在另一个终端运行：
 
 ```bash
 make tui
+```
+
+也可以构建独立 CLI 二进制并复制到目标机器；目标机器只需能访问 AgentGo API：
+
+```bash
+make cli-build
+AGENTGO_API_URL=http://localhost:8080 ./bin/agentgo
 ```
 
 TUI 会实时展示 Agent Loop 阶段、模型显式 reasoning、原生 Function Calling 及结果、RAG 引用、错误和最终答案，也能直接导入宿主机上的 Markdown、PDF、DOCX 和 XLSX 文件：
@@ -100,7 +107,7 @@ TUI 会实时展示 Agent Loop 阶段、模型显式 reasoning、原生 Function
 /import /home/xin/docs/orders.xlsx
 ```
 
-Markdown 必须为 UTF-8 且不超过 10 MiB；PDF、DOCX、XLSX 不超过 50 MiB。文件导入异步执行，TUI 会轮询状态并展示精确的页码或 Excel 单元格范围。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/plan <任务>` 显式启用 Planner-Executor，`/approve <proposal_id>` 批准文件修改，`/clear` 创建新会话，`Ctrl+C` 退出。Planner 模式由调用方指定，与意图识别无关。本地模式无需令牌；启用 OIDC 后需设置 `AGENTGO_ACCESS_TOKEN`。`AGENTGO_USER_ID` 仅作显示名，身份由服务端决定。也可先通过 API 创建会话，再观察 SSE 事件：
+Markdown 必须为 UTF-8 且不超过 10 MiB；PDF、DOCX、XLSX 不超过 50 MiB。文件导入异步执行，TUI 会轮询状态并展示精确的页码或 Excel 单元格范围。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/skill <name>` 为当前会话绑定一个必须使用的 Skill，后续每轮（包括 `/plan`）都会显式加载；`/skill` 查看绑定，`/skill clear` 恢复自动选择，`/clear` 创建新会话并清除绑定。其他命令包括 `/plan <任务>`、`/approve <proposal_id>` 和 `/import <path>`，`Ctrl+C` 退出。Planner 模式由调用方指定，与意图识别无关。本地模式无需令牌；启用 OIDC 后需设置 `AGENTGO_ACCESS_TOKEN`。`AGENTGO_USER_ID` 仅作显示名，身份由服务端决定。也可先通过 API 创建会话，再观察 SSE 事件：
 
 ```bash
 SESSION_ID=$(curl -s http://localhost:8080/api/v1/sessions \

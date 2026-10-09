@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ type model struct {
 	reasoningIndex     int
 	reasoningText      string
 	reasoningStreaming bool
+	skills             []string
 }
 
 var (
@@ -58,6 +60,7 @@ var (
 	answerStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	spinnerFrames  = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	skillName      = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 )
 
 func main() {
@@ -175,7 +178,29 @@ func (m *model) submit() (tea.Model, tea.Cmd) {
 			m.logs = append(m.logs, errorStyle.Render("创建会话失败: "+err.Error()))
 			return m, nil
 		}
-		m.logs, m.session = nil, session
+		m.logs, m.session, m.skills = nil, session, nil
+		return m, nil
+	}
+	parts := strings.Fields(query)
+	if len(parts) > 0 && strings.EqualFold(parts[0], "/skill") {
+		switch {
+		case len(parts) == 1:
+			if len(m.skills) == 0 {
+				m.logs = append(m.logs, statusStyle.Render("当前会话未绑定 Skill（模型可自动选择）"))
+			} else {
+				m.logs = append(m.logs, statusStyle.Render("当前会话 Skill: "+m.skills[0]))
+			}
+		case len(parts) != 2:
+			m.logs = append(m.logs, errorStyle.Render("错误: 用法为 /skill <name> 或 /skill clear"))
+		case strings.EqualFold(parts[1], "clear"):
+			m.skills = nil
+			m.logs = append(m.logs, statusStyle.Render("已清除会话 Skill 绑定，恢复自动选择"))
+		case !skillName.MatchString(parts[1]):
+			m.logs = append(m.logs, errorStyle.Render("错误: Skill 名称只能包含小写字母、数字和单连字符"))
+		default:
+			m.skills = []string{parts[1]}
+			m.logs = append(m.logs, statusStyle.Render("已为当前会话绑定 Skill: "+parts[1]+"（后续每轮生效）"))
+		}
 		return m, nil
 	}
 	if strings.HasPrefix(query, "/import ") {
@@ -228,7 +253,7 @@ func (m *model) submit() (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	events := make(chan streamEvent, 32)
 	m.beginRequest(cancel, events)
-	go stream(ctx, m.baseURL, m.session, query, mode, approvedProposals, events)
+	go stream(ctx, m.baseURL, m.session, query, mode, approvedProposals, append([]string(nil), m.skills...), events)
 	return m, tea.Batch(waitEvent(events), tickSpinner())
 }
 
@@ -340,7 +365,11 @@ func (m *model) View() string {
 	width := m.viewWidth()
 	b.WriteString(titleStyle.Render("AgentGo · 可观察 TUI"))
 	b.WriteString("\n")
-	b.WriteString(ansi.Truncate(statusStyle.Render("服务: "+m.baseURL+"  会话: "+m.session), width, "…"))
+	skillStatus := "自动"
+	if len(m.skills) > 0 {
+		skillStatus = m.skills[0]
+	}
+	b.WriteString(ansi.Truncate(statusStyle.Render("服务: "+m.baseURL+"  会话: "+m.session+"  Skill: "+skillStatus), width, "…"))
 	b.WriteString("\n" + strings.Repeat("─", min(width, 80)) + "\n")
 	lines := m.historyLines()
 	visible := m.viewportHeight()
@@ -358,7 +387,7 @@ func (m *model) View() string {
 	if m.scrollOffset > 0 {
 		scrollHint = fmt.Sprintf(" · 距最新 %d 行", m.scrollOffset)
 	}
-	help := statusStyle.Render("Enter 发送 · ↑↓/PgUp/PgDn/鼠标滚轮 查看历史" + scrollHint + " · /plan 规划 · /approve 批准 · /import 导入 · /clear 清空 · Ctrl+C 退出")
+	help := statusStyle.Render("Enter 发送 · ↑↓/PgUp/PgDn/鼠标滚轮 查看历史" + scrollHint + " · /skill 绑定 · /plan 规划 · /approve 批准 · /import 导入 · /clear 清空 · Ctrl+C 退出")
 	b.WriteString("\n" + ansi.Truncate(help, width, "…"))
 	return b.String()
 }
@@ -395,11 +424,21 @@ func (m *model) scrollBy(delta int) {
 	m.scrollOffset = max(0, min(m.maxScrollOffset(), m.scrollOffset+delta))
 }
 
-func stream(ctx context.Context, baseURL, session, query, mode string, approvedProposals []string, events chan<- streamEvent) {
+func stream(ctx context.Context, baseURL, session, query, mode string, approvedProposals, skills []string, events chan<- streamEvent) {
 	defer close(events)
 	payload := map[string]any{"session_id": session, "message": query, "stream": true}
-	if mode != "" || len(approvedProposals) > 0 {
-		payload["options"] = map[string]any{"mode": mode, "approved_proposals": approvedProposals}
+	if mode != "" || len(approvedProposals) > 0 || len(skills) > 0 {
+		options := map[string]any{}
+		if mode != "" {
+			options["mode"] = mode
+		}
+		if len(approvedProposals) > 0 {
+			options["approved_proposals"] = approvedProposals
+		}
+		if len(skills) > 0 {
+			options["skills"] = skills
+		}
+		payload["options"] = options
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/v1/chat/stream", bytes.NewReader(body))
@@ -471,16 +510,24 @@ func createSession(ctx context.Context, baseURL, userID string) (string, error) 
 		return "", err
 	}
 	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("读取创建会话响应失败: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("创建会话失败: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
 	var envelope struct {
-		Data struct {
+		Message string `json:"message"`
+		Data    struct {
 			SessionID string `json:"session_id"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&envelope); err != nil {
-		return "", err
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return "", fmt.Errorf("AgentGo API 响应无效，请检查 AGENTGO_API_URL: %w", err)
 	}
-	if resp.StatusCode != http.StatusOK || envelope.Data.SessionID == "" {
-		return "", fmt.Errorf("创建会话失败: HTTP %d", resp.StatusCode)
+	if envelope.Data.SessionID == "" {
+		return "", fmt.Errorf("AgentGo API 响应缺少 session_id，请检查 AGENTGO_API_URL: %s", strings.TrimSpace(envelope.Message))
 	}
 	return envelope.Data.SessionID, nil
 }
