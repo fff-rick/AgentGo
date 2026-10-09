@@ -202,7 +202,7 @@ func main() {
 		}
 	}
 	agentHarness := harness.New(loop, planner, contextBuilder, sessionManager, memoryExtractor, toolRouter, hooks, cfg.Agent.MaxIterations, cfg.Tools.MaxDiscoveryCalls, cfg.Agent.DefaultTimeout, logger)
-	if skillRegistry != nil && skillRegistry.Count() > 0 {
+	if skillRegistry != nil {
 		agentHarness.SetSkills(skillRegistry)
 	}
 	agentHarness.SetMemoryJobs(memoryJobs)

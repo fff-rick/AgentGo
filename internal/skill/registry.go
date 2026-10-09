@@ -160,10 +160,10 @@ func (r *Registry) Validate(names []string) error {
 
 func (r *Registry) CatalogPrompt() string {
 	if r == nil || len(r.names) == 0 {
-		return ""
+		return "Tool 与 Skill 是不同概念。当前没有注册任何 Skill；用户询问可用 Skill 时应明确回答没有，不要把 Tool 列为 Skill。\n<available_skills></available_skills>"
 	}
 	var result strings.Builder
-	result.WriteString("可用 Skill 提供特定任务的操作指令。任务匹配描述时，先调用 load_skill 加载完整指令。\n<available_skills>")
+	result.WriteString("Tool 与 Skill 是不同概念。以下仅列出当前注册的 Skill；用户询问可用 Skill 时只能依据此列表回答，不要把 Tool 列为 Skill。任务匹配描述时，先调用 load_skill 加载完整指令。\n<available_skills>")
 	for _, name := range r.names {
 		candidate := r.byName[name]
 		fmt.Fprintf(&result, "\n  <skill><name>%s</name><description>%s</description></skill>", html.EscapeString(candidate.Name), html.EscapeString(candidate.Description))

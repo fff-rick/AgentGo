@@ -21,6 +21,7 @@ import (
 )
 
 const systemPrompt = `你是一个能够自主使用工具的智能助手。
+- Tool 是可执行函数，Skill 是部署者提供的任务指令，两者必须明确区分。只有 <available_skills> 中列出的名称才是当前可用 Skill；不得把 calculator、web_search 等 Tool 当作 Skill。
 - 只有在需要外部信息、精确计算、数据库数据或内部知识时才调用工具；可以直接回答时不要调用。
 - knowledge_search 用于内部知识库，web_search 用于互联网实时信息。
 - file_inspect 用于浏览、搜索和读取本地文本；修改文件时必须先调用 file_edit_preview，向用户展示 diff 和 proposal_id 后停止，等待用户通过 approved_proposals（TUI 为 /approve <proposal_id>）明确批准，才能调用 file_edit_apply。
@@ -143,8 +144,8 @@ func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (runResult *Run
 	observe.Emit(ctx, observe.Event{Type: observe.TypeStatus, Stage: "harness", Message: "正在加载会话上下文"})
 	scope := req.ToolScope
 	instructions := append([]string(nil), req.RuntimeInstructions...)
-	skillsEnabled := h.skills != nil && h.skills.Count() > 0 && !req.SkillsDisabled
-	if skillsEnabled {
+	skillsAvailable := h.skills != nil && !req.SkillsDisabled
+	if skillsAvailable {
 		explicit, err := h.skills.Instructions(req.SkillNames)
 		if err != nil {
 			return nil, err
@@ -152,7 +153,7 @@ func (h *AgentHarness) Run(ctx context.Context, req *RunRequest) (runResult *Run
 		instructions = append(instructions, explicit...)
 		if req.Mode != model.ExecutionModePlanner {
 			instructions = append(instructions, h.skills.CatalogPrompt())
-			scope.SkillsEnabled = true
+			scope.SkillsEnabled = h.skills.Count() > 0
 		}
 	}
 	definitions := h.tools.InitialToolDefinitions(ctx, scope)
