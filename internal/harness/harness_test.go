@@ -179,6 +179,29 @@ func TestHarnessProgressivelyDisclosesSkillsAndSupportsDisabling(t *testing.T) {
 	}
 }
 
+func TestHarnessExplainsWhenNoSkillsAreRegistered(t *testing.T) {
+	root := t.TempDir()
+	skills, diagnostics := skill.Load([]string{root})
+	if len(diagnostics) != 0 {
+		t.Fatal(diagnostics)
+	}
+	contexts := &skillContextStub{}
+	tools := &skillToolsStub{}
+	loop := &loopStub{}
+	h := New(loop, nil, contexts, &sessionsStub{}, nil, tools, nil, 2, 4, time.Second, zap.NewNop())
+	h.SetSkills(skills)
+
+	if _, err := h.Run(context.Background(), &RunRequest{Session: &model.Session{ID: "session", UserID: "user"}, Message: "你有哪些 Skill？"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(contexts.input.RuntimeInstructions) != 1 || !strings.Contains(contexts.input.RuntimeInstructions[0], "当前没有注册任何 Skill") {
+		t.Fatalf("instructions=%v", contexts.input.RuntimeInstructions)
+	}
+	if tools.scope.SkillsEnabled || loop.input.ToolScope.SkillsEnabled {
+		t.Fatalf("empty registry enabled load_skill: scope=%+v loop=%+v", tools.scope, loop.input)
+	}
+}
+
 func TestHarnessPlannerUsesOnlyExplicitSkills(t *testing.T) {
 	contexts := &skillContextStub{}
 	tools := &skillToolsStub{}
