@@ -1,4 +1,4 @@
-.PHONY: build run tui test test-milvus benchmark benchmark-e2e benchmark-sse benchmark-intent benchmark-laya benchmark-laya-shadow benchmark-retrieval lint clean docker-build docker-run docker-stop docker-logs fmt vet
+.PHONY: build cli-build run tui test test-milvus benchmark benchmark-e2e benchmark-sse benchmark-intent benchmark-laya benchmark-laya-shadow benchmark-retrieval lint clean docker-build docker-run docker-stop docker-logs fmt vet
 
 APP_NAME := ai-agent-go
 APP_IMAGE ?= $(APP_NAME):local
@@ -10,6 +10,11 @@ LDFLAGS  := -ldflags "-s -w -X main.version=$(VERSION) -X main.buildTime=$(BUILD
 build:
 	@echo ">>> 构建 $(APP_NAME)..."
 	CGO_ENABLED=0 go build $(LDFLAGS) -o bin/$(APP_NAME) ./cmd/server
+
+# 构建可分发的命令行客户端
+cli-build:
+	@echo ">>> 构建 AgentGo CLI..."
+	CGO_ENABLED=0 go build $(LDFLAGS) -o bin/agentgo ./cmd/tui
 
 # 本地运行
 run:
