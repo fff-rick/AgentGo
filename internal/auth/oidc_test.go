@@ -66,6 +66,25 @@ func TestVerifierChecksSignatureIssuerAudienceAndExpiry(t *testing.T) {
 	if err != nil || id != UserID(issuer, "alice") {
 		t.Fatalf("id=%q err=%v", id, err)
 	}
+	router := gin.New()
+	router.Use(v.Middleware())
+	router.GET("/protected", func(c *gin.Context) { c.String(http.StatusOK, Principal(c)) })
+	for _, test := range []struct {
+		name, authorization string
+		want                int
+	}{
+		{name: "missing", want: http.StatusUnauthorized},
+		{name: "invalid", authorization: "Bearer invalid", want: http.StatusUnauthorized},
+		{name: "valid", authorization: "Bearer " + sign(base), want: http.StatusOK},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/protected", nil)
+		request.Header.Set("Authorization", test.authorization)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != test.want || test.want == http.StatusOK && response.Body.String() != "alice" {
+			t.Fatalf("%s status=%d body=%q", test.name, response.Code, response.Body.String())
+		}
+	}
 	attacker, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)

@@ -119,6 +119,9 @@ func (r *Router) ExecuteScoped(ctx context.Context, scope Scope, toolName, input
 }
 
 func loggableInput(toolName, input string) string {
+	if toolName == "database_query" {
+		return fmt.Sprintf("{input_bytes:%d}", len(input))
+	}
 	if toolName != "file_edit_preview" {
 		return truncate(input, 200)
 	}

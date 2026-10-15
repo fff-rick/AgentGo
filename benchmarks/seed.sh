@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+# OIDC 模式下令牌的 sub 还必须位于服务端 APP_AUTH_PUBLISHER_SUBJECTS。
 base_url="${BENCH_URL:-http://localhost:18080}"
 dataset="${1:-benchmarks/datasets/corpus.example.jsonl}"
 while IFS= read -r row; do

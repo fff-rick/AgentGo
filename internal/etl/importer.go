@@ -61,6 +61,8 @@ func NewImporter(ctx context.Context, pipeline *Pipeline, repo ImportRepository,
 func (i *Importer) Submit(ctx context.Context, doc *model.Document, data []byte) (*model.DocumentResponse, bool, error) {
 	i.submitMu.Lock()
 	defer i.submitMu.Unlock()
+	i.pipeline.mu.Lock()
+	defer i.pipeline.mu.Unlock()
 	doc.Title = strings.TrimSpace(doc.Title)
 	doc.ContentType = normalizeContentType(doc.ContentType)
 	if doc.Tags == nil {
@@ -72,8 +74,14 @@ func (i *Importer) Submit(ctx context.Context, doc *model.Document, data []byte)
 	doc.ID = DocumentID(doc.ContentType, doc.Title)
 	doc.ContentHash = ContentHashBytes(data)
 	if existing, err := i.repo.FindDocument(ctx, doc.ID); err == nil {
-		if existing.Status == "processing" || existing.Status == "completed" && existing.ContentHash == doc.ContentHash {
+		if existing.ContentHash == doc.ContentHash && (existing.Status == "processing" || existing.Status == "completed") {
 			return existing, false, nil
+		}
+		if existing.Status == "processing" {
+			return nil, false, ErrDocumentConflict
+		}
+		if existing.ContentHash != doc.ContentHash && doc.ExpectedContentHash != existing.ContentHash {
+			return nil, false, ErrDocumentConflict
 		}
 		doc.CreatedAt = existing.CreatedAt
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -108,6 +116,7 @@ func (i *Importer) Submit(ctx context.Context, doc *model.Document, data []byte)
 		os.Remove(path)
 		return nil, false, err
 	}
+	doc.ImportReserved = true
 	job := importJob{doc: doc, path: path}
 	response := &model.DocumentResponse{DocID: doc.ID, Title: doc.Title, Status: "processing", CreatedAt: doc.CreatedAt, ContentHash: doc.ContentHash}
 	select {

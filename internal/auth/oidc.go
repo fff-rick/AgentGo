@@ -21,7 +21,10 @@ import (
 	"github.com/golang-jwt/jwt/v4"
 )
 
-const identityKey = "authenticated_user_id"
+const (
+	identityKey  = "authenticated_user_id"
+	principalKey = "authenticated_principal"
+)
 
 const LocalUserID = "local-user"
 
@@ -118,7 +121,7 @@ func (v *Verifier) refresh(ctx context.Context) error {
 	return nil
 }
 
-func (v *Verifier) Verify(ctx context.Context, tokenString string) (string, error) {
+func (v *Verifier) verify(ctx context.Context, tokenString string) (string, string, error) {
 	claims := jwt.MapClaims{}
 	token, err := jwt.NewParser(jwt.WithValidMethods([]string{"RS256"})).ParseWithClaims(tokenString, claims, func(token *jwt.Token) (any, error) {
 		kid, ok := token.Header["kid"].(string)
@@ -142,13 +145,18 @@ func (v *Verifier) Verify(ctx context.Context, tokenString string) (string, erro
 		return key, nil
 	})
 	if err != nil || !token.Valid || !claims.VerifyIssuer(v.issuer, true) || !claims.VerifyAudience(v.audience, true) || !claims.VerifyExpiresAt(time.Now().Unix(), true) {
-		return "", errors.New("无效的访问令牌")
+		return "", "", errors.New("无效的访问令牌")
 	}
 	sub, ok := claims["sub"].(string)
 	if !ok || sub == "" || len(sub) > 512 {
-		return "", errors.New("访问令牌缺少 sub")
+		return "", "", errors.New("访问令牌缺少 sub")
 	}
-	return UserID(v.issuer, sub), nil
+	return UserID(v.issuer, sub), sub, nil
+}
+
+func (v *Verifier) Verify(ctx context.Context, tokenString string) (string, error) {
+	id, _, err := v.verify(ctx, tokenString)
+	return id, err
 }
 
 func (v *Verifier) Middleware() gin.HandlerFunc {
@@ -158,12 +166,13 @@ func (v *Verifier) Middleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "缺少 Bearer token"})
 			return
 		}
-		id, err := v.Verify(c.Request.Context(), strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")))
+		id, principal, err := v.verify(c.Request.Context(), strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")))
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "无效的访问令牌"})
 			return
 		}
-		c.Set(identityKey, id)
+		SetIdentity(c, id)
+		c.Set(principalKey, principal)
 		c.Next()
 	}
 }
@@ -174,8 +183,18 @@ func Identity(c *gin.Context) string {
 	return id
 }
 
+// Principal returns the verified OIDC subject used by server-side allowlists.
+func Principal(c *gin.Context) string {
+	value, _ := c.Get(principalKey)
+	id, _ := value.(string)
+	return id
+}
+
 // SetIdentity lets trusted middleware install a verified identity.
-func SetIdentity(c *gin.Context, id string) { c.Set(identityKey, id) }
+func SetIdentity(c *gin.Context, id string) {
+	c.Set(identityKey, id)
+	c.Set(principalKey, id)
+}
 
 func UserID(issuer, subject string) string {
 	sum := sha256.Sum256([]byte(issuer + "\x00" + subject))

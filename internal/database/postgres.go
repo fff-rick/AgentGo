@@ -17,7 +17,7 @@ import (
 	"github.com/enterprise/ai-agent-go/internal/trace"
 )
 
-// Client owns the shared PostgreSQL connection pool used by RAG and tools.
+// Client owns the shared PostgreSQL connection pool used by RAG and internal stores.
 type Client struct {
 	db        *sql.DB
 	segmenter *gse.Segmenter
@@ -134,7 +134,7 @@ func (c *Client) backfillTerms(ctx context.Context) error {
 	return nil
 }
 
-// DB exposes the pool to the read-only database tool.
+// DB exposes the application pool to internal stores.
 func (c *Client) DB() *sql.DB { return c.db }
 
 func (c *Client) Close() error { return c.db.Close() }

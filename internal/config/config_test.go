@@ -45,6 +45,7 @@ func TestLoadMultiModelRoutingConfig(t *testing.T) {
 	t.Setenv("APP_AUTH_ENABLED", "true")
 	t.Setenv("APP_AUTH_ISSUER", "https://issuer.example")
 	t.Setenv("APP_AUTH_AUDIENCE", "agentgo")
+	t.Setenv("APP_AUTH_PUBLISHER_SUBJECTS", "publisher-1,publisher-2")
 	t.Setenv("APP_LLM_BASE_URL", "https://example.com")
 	t.Setenv("APP_LLM_API_KEY", "gpt-key")
 	t.Setenv("APP_QWEN_BASE_URL", "http://localhost:11434")
@@ -62,13 +63,13 @@ func TestLoadMultiModelRoutingConfig(t *testing.T) {
 	if cfg.Tools.LazyLoadThreshold != 3 || cfg.Tools.MaxDiscoveryCalls != 4 {
 		t.Fatalf("unexpected tool config: %+v", cfg.Tools)
 	}
-	if !cfg.Filesystem.Enabled {
-		t.Fatal("filesystem should be enabled by default")
+	if cfg.Filesystem.Enabled {
+		t.Fatal("filesystem should be disabled by default")
 	}
 	if !cfg.Skills.Enabled || len(cfg.Skills.Paths) != 0 {
 		t.Fatalf("unexpected skill config: %+v", cfg.Skills)
 	}
-	if !cfg.Auth.Enabled || cfg.Auth.Issuer != "https://issuer.example" || cfg.Auth.Audience != "agentgo" {
+	if !cfg.Auth.Enabled || cfg.Auth.Issuer != "https://issuer.example" || cfg.Auth.Audience != "agentgo" || len(cfg.Auth.PublisherSubjects) != 2 {
 		t.Fatalf("auth config=%+v", cfg.Auth)
 	}
 }
@@ -111,5 +112,26 @@ func TestLoadLayaEnv(t *testing.T) {
 	}
 	if !cfg.Laya.Enabled || cfg.Laya.URL != "http://localhost:9000/v1/systemone" || cfg.Laya.APIKey != "test-secret" || cfg.Laya.Timeout != 750*time.Millisecond || cfg.Laya.Mode != "live" || cfg.Laya.MinConfidence != .75 {
 		t.Fatalf("unexpected Laya config: %+v", cfg.Laya)
+	}
+}
+
+func TestLoadToolPermissionConfig(t *testing.T) {
+	t.Setenv("APP_DATABASE_TOOL_DSN", "postgres://reader:secret@localhost/reports")
+	t.Setenv("APP_DATABASE_TOOL_ALLOWED_VIEWS", "tool_api.products,tool_api.sales")
+	t.Setenv("APP_DATABASE_TOOL_MAX_SQL_BYTES", "4096")
+	t.Setenv("APP_DATABASE_TOOL_MAX_CELL_BYTES", "2048")
+	t.Setenv("APP_DATABASE_TOOL_MAX_RESULT_BYTES", "8192")
+	t.Setenv("APP_FILESYSTEM_ENABLED", "true")
+	t.Setenv("APP_FILESYSTEM_WORKSPACE_ROOT", t.TempDir())
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DatabaseTool.DSN == "" || len(cfg.DatabaseTool.AllowedViews) != 2 || cfg.DatabaseTool.MaxSQLBytes != 4096 || cfg.DatabaseTool.MaxCellBytes != 2048 || cfg.DatabaseTool.MaxResultBytes != 8192 || !cfg.Filesystem.Enabled || cfg.Filesystem.WorkspaceRoot == "" {
+		t.Fatal("tool permission config was not loaded")
+	}
+	t.Setenv("APP_FILESYSTEM_WORKSPACE_ROOT", "")
+	if _, err := Load(""); err == nil {
+		t.Fatal("filesystem enabled without a workspace")
 	}
 }

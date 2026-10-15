@@ -18,21 +18,30 @@ import (
 )
 
 func TestImportDocument(t *testing.T) {
+	t.Setenv("AGENTGO_ACCESS_TOKEN", "document-token")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/documents/import" {
-			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
-		}
-		file, header, err := r.FormFile("file")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer file.Close()
-		content, _ := io.ReadAll(file)
-		if header.Filename != "knowledge.md" || string(content) != "# Knowledge\nAgentGo" {
-			t.Fatalf("unexpected upload: %q %q", header.Filename, content)
+		if r.Header.Get("Authorization") != "Bearer document-token" {
+			t.Fatalf("missing authorization on %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"doc_id":"doc-1","title":"knowledge","status":"completed","chunk_count":2}}`))
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/documents/import":
+			file, header, err := r.FormFile("file")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			content, _ := io.ReadAll(file)
+			if header.Filename != "knowledge.md" || string(content) != "# Knowledge\nAgentGo" {
+				t.Fatalf("unexpected upload: %q %q", header.Filename, content)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"doc_id":"doc-1","title":"knowledge","status":"processing","chunk_count":0}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/documents/doc-1":
+			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"doc_id":"doc-1","title":"knowledge","status":"completed","chunk_count":2}}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
 	}))
 	defer server.Close()
 
@@ -52,7 +61,7 @@ func TestImportDocument(t *testing.T) {
 			got = append(got, event)
 		}
 	}
-	if len(got) != 2 || got[1].Message != "导入完成：knowledge，2 个分块，doc_id=doc-1" {
+	if len(got) != 3 || got[2].Message != "导入完成：knowledge，2 个分块，doc_id=doc-1" {
 		t.Fatalf("unexpected events: %+v", got)
 	}
 }

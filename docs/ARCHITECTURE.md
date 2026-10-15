@@ -2,6 +2,8 @@
 
 依据 `97a45a3` 源码整理。SVG 为可直接在 GitHub 展示的静态图，不依赖外部图床。
 
+修复优先级、实施步骤与验收标准见 [修复与性能优化方案](REPAIR_OPTIMIZATION_PLAN.md)。
+
 ## 总体架构
 
 ![总体架构](assets/architecture.svg)

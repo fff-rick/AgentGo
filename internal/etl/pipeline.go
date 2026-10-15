@@ -30,6 +30,8 @@ type Pipeline struct {
 	mu       sync.Mutex
 }
 
+var ErrDocumentConflict = errors.New("文档已被其他版本覆盖")
+
 // DocumentIndexer persists chunks for PostgreSQL keyword search.
 type DocumentIndexer interface {
 	FindDocument(ctx context.Context, id string) (*model.DocumentResponse, error)
@@ -76,8 +78,17 @@ func (p *Pipeline) ProcessDocument(ctx context.Context, doc *model.Document) (*m
 		return nil, fmt.Errorf("查询现有文档失败: %w", err)
 	}
 	if err == nil {
+		if existing.Status == "processing" && !doc.ImportReserved {
+			if existing.ContentHash == doc.ContentHash {
+				return existing, nil
+			}
+			return nil, ErrDocumentConflict
+		}
 		if existing.Status == "completed" && existing.ContentHash == doc.ContentHash {
 			return existing, nil
+		}
+		if existing.ContentHash != doc.ContentHash && doc.ExpectedContentHash != existing.ContentHash {
+			return nil, ErrDocumentConflict
 		}
 		doc.CreatedAt = existing.CreatedAt
 	}

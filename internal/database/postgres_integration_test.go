@@ -2,23 +2,19 @@ package database_test
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"go.uber.org/zap"
 
 	"github.com/enterprise/ai-agent-go/internal/config"
 	"github.com/enterprise/ai-agent-go/internal/database"
 	"github.com/enterprise/ai-agent-go/internal/model"
-	toolbuiltin "github.com/enterprise/ai-agent-go/internal/tool/builtin"
 )
 
-func TestPostgresKeywordSearchAndDatabaseToolIntegration(t *testing.T) {
+func TestPostgresKeywordSearchIntegration(t *testing.T) {
 	if os.Getenv("POSTGRES_INTEGRATION") != "1" {
 		t.Skip("set POSTGRES_INTEGRATION=1 to run")
 	}
@@ -63,13 +59,6 @@ func TestPostgresKeywordSearchAndDatabaseToolIntegration(t *testing.T) {
 	chineseRefs, err := client.Search(ctx, "中文分词", 20)
 	if err != nil || !containsChunk(chineseRefs, chunkID) {
 		t.Fatalf("Chinese BM25 refs = %#v, error = %v", chineseRefs, err)
-	}
-
-	dbTool := toolbuiltin.NewDatabaseTool(client.DB(), cfg.Postgres, zap.NewNop())
-	input, _ := json.Marshal(map[string]string{"sql": fmt.Sprintf("SELECT title FROM documents WHERE id = '%s'", docID)})
-	result, err := dbTool.Execute(ctx, string(input))
-	if err != nil || !result.Success || result.Output == "" {
-		t.Fatalf("database tool result = %#v, error = %v", result, err)
 	}
 
 	doc.ContentHash = "hash-v2"

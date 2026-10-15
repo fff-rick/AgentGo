@@ -4,7 +4,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white" alt="Go 1.22+" />
+  <img src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white" alt="Go 1.25+" />
   <img src="https://img.shields.io/badge/API-Gin-3972D6" alt="Gin API" />
   <img src="https://img.shields.io/badge/Streaming-SSE-399878" alt="SSE Streaming" />
   <img src="https://img.shields.io/badge/RAG-Hybrid-8256C7" alt="Hybrid RAG" />
@@ -12,7 +12,7 @@
 
 # AgentGo｜Go 原生智能体平台
 
-基于 Go 1.22 构建，采用自研 AgentHarness 与 AgentLoop，支持原生 Function Calling、混合检索、三层记忆、多模型路由，以及可观察的终端交互。
+基于 Go 1.25 构建，采用自研 AgentHarness 与 AgentLoop，支持原生 Function Calling、混合检索、三层记忆、多模型路由，以及可观察的终端交互。
 
 [![AgentGo 总体架构](docs/assets/architecture.svg)](docs/ARCHITECTURE.md)
 
@@ -54,7 +54,7 @@ AgentHarness 负责单次 Run 的生命周期。默认进入模型驱动的 Agen
 
 ### 环境要求
 
-- Go >= 1.22
+- Go >= 1.25
 - Redis >= 7.0
 - Docker Desktop + WSL integration（使用容器启动时）
 - Milvus 2.5.x（Compose 会连同 etcd、MinIO 一起启动）
@@ -106,7 +106,7 @@ TUI 会实时展示 Agent Loop 阶段、模型显式 reasoning、原生 Function
 /import /home/xin/docs/orders.xlsx
 ```
 
-Markdown 必须为 UTF-8 且不超过 10 MiB；PDF、DOCX、XLSX 不超过 50 MiB。文件导入异步执行，TUI 会轮询状态并展示精确的页码或 Excel 单元格范围。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/skill <name>` 为当前会话绑定一个必须使用的 Skill，后续每轮（包括 `/plan`）都会显式加载；`/skill` 查看绑定，`/skill clear` 恢复自动选择，`/clear` 创建新会话并清除绑定。其他命令包括 `/plan <任务>`、`/approve <proposal_id>` 和 `/import <path>`，`Ctrl+C` 退出。Planner 模式由调用方指定，与意图识别无关。本地模式无需令牌；启用 OIDC 后需设置 `AGENTGO_ACCESS_TOKEN`。`AGENTGO_USER_ID` 仅作显示名，身份由服务端决定。也可先通过 API 创建会话，再观察 SSE 事件：
+Markdown 与 JSON 文档文本必须为 UTF-8 且不超过 10 MiB；JSON metadata 不超过 64 KiB，PDF、DOCX、XLSX 不超过 50 MiB。文件导入异步执行，TUI 会携带 `AGENTGO_ACCESS_TOKEN` 上传并轮询状态，展示精确的页码或 Excel 单元格范围。模型答案和显式推理会逐段流式显示；执行期间底部展示加载动画和耗时。使用 `↑`/`↓`、`PgUp`/`PgDn`、`Home`/`End` 或鼠标滚轮查看历史，`Esc` 可取消当前请求或导入，`/skill <name>` 为当前会话绑定一个必须使用的 Skill，后续每轮（包括 `/plan`）都会显式加载；`/skill` 查看绑定，`/skill clear` 恢复自动选择，`/clear` 创建新会话并清除绑定。其他命令包括 `/plan <任务>`、`/approve <proposal_id>` 和 `/import <path>`，`Ctrl+C` 退出。Planner 模式由调用方指定，与意图识别无关。本地模式无需令牌；启用 OIDC 后需设置 `AGENTGO_ACCESS_TOKEN`。`AGENTGO_USER_ID` 仅作显示名，身份由服务端决定。也可先通过 API 创建会话，再观察 SSE 事件：
 
 ```bash
 SESSION_ID=$(curl -s http://localhost:8080/api/v1/sessions \
@@ -151,9 +151,14 @@ APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 |---|---|---|
 | `APP_REDIS_ADDR` | `localhost:6379` | Redis 地址；Compose 内自动改为 `redis:6379` |
 | `APP_POSTGRES_HOST` | `localhost` | PostgreSQL 地址；Compose 内自动改为 `postgres` |
-| `APP_POSTGRES_DBNAME` | `ai_agent` | 文档全文索引和数据库工具使用的数据库 |
-| `APP_POSTGRES_QUERY_TIMEOUT` | `10s` | `database_query` 单次 SELECT 的最大执行时间 |
-| `APP_POSTGRES_MAX_ROWS` | `100` | `database_query` 最多返回的数据行数 |
+| `APP_POSTGRES_DBNAME` | `ai_agent` | 文档索引和内部记忆存储数据库 |
+| `APP_DATABASE_TOOL_DSN` | 空 | 独立只读角色连接；为空不注册数据库工具 |
+| `APP_DATABASE_TOOL_ALLOWED_VIEWS` | 空 | 明确获准的共享视图，逗号分隔的 `schema.view` |
+| `APP_DATABASE_TOOL_QUERY_TIMEOUT` | `10s` | 工具单次查询超时 |
+| `APP_DATABASE_TOOL_MAX_ROWS` | `100` | 最多返回行数 |
+| `APP_DATABASE_TOOL_MAX_SQL_BYTES` | `16384` | SQL 字节上限 |
+| `APP_DATABASE_TOOL_MAX_CELL_BYTES` | `65536` | JSON 编码后单元格及列名字节上限 |
+| `APP_DATABASE_TOOL_MAX_RESULT_BYTES` | `1048576` | 完整 JSON 结果字节上限 |
 | `APP_MILVUS_ADDR` | `localhost:19530` | Milvus gRPC 地址；Compose 内自动改为 `milvus-standalone:19530` |
 | `APP_MILVUS_DATABASE` | `default` | Milvus database |
 | `APP_MILVUS_COLLECTION_NAME` | `documents_bge_m3` | 默认 collection，启动时自动创建 |
@@ -183,14 +188,17 @@ APP_EMBEDDING_BASE_URL=http://localhost:11434 make run
 | `APP_CONTEXT_RECENT_MESSAGES` | `20` | 压缩后优先保留的最近消息数 |
 | `APP_TOOLS_LAZY_LOAD_THRESHOLD` | `3` | 每个会话最多保留的业务工具 Schema 数量 |
 | `APP_TOOLS_MAX_DISCOVERY_CALLS` | `4` | 单次 Agent Run 最多允许的 `list_tools` 控制调用次数 |
-| `APP_FILESYSTEM_ENABLED` | `true` | 是否启用本地文本文件浏览、修改预览和审批提交工具 |
+| `APP_FILESYSTEM_ENABLED` | `false` | 是否启用用户工作目录内的文件工具 |
+| `APP_FILESYSTEM_WORKSPACE_ROOT` | 空 | 启用文件工具时必填的专用绝对目录；Compose 使用 `/workspace` |
 | `APP_SKILLS_ENABLED` | `true` | 是否在启动时加载 Skill |
 
-文档上传会按规范化后的内容类型和标题生成稳定文档 ID，并按原始内容生成 ContentHash；同一文档内容未变化时跳过处理，内容变化时覆盖 PostgreSQL 索引和 Milvus 向量并清理多余旧分块。分块经配置的 Embedding 服务批量向量化后 Upsert 到 Milvus，同时通过纯 Go 中文分词写入 PostgreSQL 倒排词频索引并使用 BM25 排序。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 仅接受单条 SELECT，并在 PostgreSQL 只读事务中执行。RAG 查询和长期记忆使用同一个 embedding 模型。
+文档上传会按规范化后的内容类型和标题生成稳定文档 ID，并按原始内容生成 ContentHash；同一文档内容未变化时跳过处理，内容变化时覆盖 PostgreSQL 索引和 Milvus 向量并清理多余旧分块。分块经配置的 Embedding 服务批量向量化后 Upsert 到 Milvus，同时通过纯 Go 中文分词写入 PostgreSQL 倒排词频索引并使用 BM25 排序。RAG 默认并发执行两路召回并通过 RRF 融合；任一路暂时失败时会降级到另一路。`database_query` 通过独立连接池和受限角色访问明确获准的共享业务视图；启动及每次查询前核查有效权限，只读事务不授予内部表访问权限。个人记忆继续通过带用户校验的接口访问。RAG 查询和长期记忆使用同一个 embedding 模型。
 
 工具 Schema 按会话惰性加载：每轮默认只携带 `list_tools` 和最多 3 个最近使用的业务工具。`options.tools` 缺省或为 `null` 时允许全部注册工具，显式 `[]` 时禁用全部业务工具，非空数组作为工具允许列表；未知工具名会返回 HTTP 400。
 
-文件工具只接受服务进程可见的绝对路径和不超过 1 MiB 的 UTF-8 普通文件。`file_edit_preview` 先返回 diff 与 15 分钟有效的 `proposal_id`，不会直接落盘；TUI 使用 `/approve <proposal_id>`，API 调用方使用 `options.approved_proposals` 批准后，`file_edit_apply` 才会校验文件哈希并原子替换。该功能默认开启且不限制绝对路径，权限边界就是 AgentGo 进程的操作系统权限；不要把未启用 OIDC 的服务暴露到不可信网络。Compose 默认把 `${AGENTGO_WORKSPACE_PATH:-.}` 挂载为容器内 `/workspace`，宿主机直跑则直接使用宿主路径。
+文件工具默认关闭。启用时仅访问 `workspace_root/SHA256(服务端 UserID)`，相对路径以该用户目录为根，`path: "."` 可列出根目录；跨目录路径和符号链接均被拒绝。文件限 1 MiB UTF-8 普通文本。`file_edit_preview` 返回 diff 与 15 分钟有效的 `proposal_id`；TUI 使用 `/approve <proposal_id>`，API 使用 `options.approved_proposals` 批准，提交时再校验用户、会话、批准 ID 和原文件哈希。同一路径在进程内串行复核与替换。
+
+Compose 默认挂载 `${AGENTGO_WORKSPACE_PATH:-./data/workspaces}` 到 `/workspace`，不再默认暴露项目根目录。读写和替换均通过用户目录的 `os.Root` 句柄完成，阻止路径检查后的符号链接逃逸，因此构建要求 Go 1.25+。工作区根目录的分配由服务端管理，多实例共享目录仍需要跨进程提交锁。完整配置、数据库授权与验收方式见 [工具权限配置](docs/TOOL_PERMISSIONS.md)。
 
 ### Skills
 
@@ -268,7 +276,17 @@ docker compose up -d searxng
 
 聊天请求可通过 `"options":{"mode":"planner"}` 显式启用 Planner-Executor；省略或使用 `agent` 时进入默认 AgentLoop。
 
-OIDC 默认关闭（`APP_AUTH_ENABLED=false`）：会话、聊天和记忆接口无需令牌，所有请求共享 `local-user`，请求体中的 `user_id` 不作为身份依据。此模式只适合可信的本地环境，不要将服务暴露到公网或多人网络；Docker Compose 默认只发布到宿主机 `127.0.0.1`，如需远程访问可设置 `AGENTGO_BIND_HOST`，但应先启用 OIDC。若要启用鉴权，设置 `APP_AUTH_ENABLED=true`，并配置 `APP_AUTH_ISSUER` 与 `APP_AUTH_AUDIENCE`；此时上述接口必须携带 Bearer token，服务会校验 RS256 签名、受众、签发者及有效期，缺少配置时启动失败。切换模式不会自动迁移旧会话或记忆的归属。旧 `semantic_memory_v1` collection 保留但不再召回，新记忆写入 `semantic_memory_v2`。
+OIDC 默认关闭（`APP_AUTH_ENABLED=false`）：会话、聊天、记忆和文档接口无需令牌，所有请求共享 `local-user`，并保留本地共享知识库写入入口；请求体中的 `user_id` 不作为身份依据。此模式只适合可信的本地环境，不要将服务暴露到公网或多人网络；Docker Compose 默认只发布到宿主机 `127.0.0.1`，如需远程访问可设置 `AGENTGO_BIND_HOST`，但应先启用 OIDC。若要启用鉴权，设置 `APP_AUTH_ENABLED=true`，并配置 `APP_AUTH_ISSUER` 与 `APP_AUTH_AUDIENCE`；此时上述接口必须携带 Bearer token，服务会校验 RS256 签名、受众、签发者及有效期，缺少配置时启动失败。共享知识库写入还要求令牌的 `sub` 位于 `APP_AUTH_PUBLISHER_SUBJECTS`；默认空列表会拒绝全部远程写入。查询文档状态只要求认证。切换模式不会自动迁移旧会话或记忆的归属。旧 `semantic_memory_v1` collection 保留但不再召回，新记忆写入 `semantic_memory_v2`。
+
+共享文档由内容类型与标题确定 ID。首次上传无需覆盖条件；更新已有标题时，先从上传或状态响应读取 `ETag`，再通过 `If-Match` 提交，错配返回 409：
+
+```bash
+curl -i "$AGENTGO_API_URL/api/v1/documents" \
+  -H "Authorization: Bearer $AGENTGO_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'If-Match: "<previous-etag>"' \
+  --data '{"title":"Runbook","content_type":"markdown","content":"# Updated"}'
+```
 
 ## 设计亮点
 
@@ -289,7 +307,7 @@ OIDC 默认关闭（`APP_AUTH_ENABLED=false`）：会话、聊天和记忆接口
 make benchmark       # 无外部依赖：ETL、工具路由、RRF、熔断器
 make benchmark-e2e   # 对已启动的 localhost:8080 运行 smoke 数据集
 sh benchmarks/compose.sh up -d --build # 独立的固定桩 Benchmark 环境，服务端口 18080
-BENCH_URL=http://localhost:18080 sh benchmarks/seed.sh # 导入示例检索语料
+BENCH_URL=http://localhost:18080 AGENTGO_ACCESS_TOKEN="$AGENTGO_ACCESS_TOKEN" sh benchmarks/seed.sh # 导入示例检索语料
 bash benchmarks/run-k6.sh baseline # 记录带元数据的 HTTP 基线报告
 ```
 

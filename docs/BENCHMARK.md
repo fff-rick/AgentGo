@@ -161,6 +161,8 @@ go run ./cmd/benchmark-sse -base-url http://localhost:18080 -backend stub \
 bash benchmarks/slow-client.sh # 固定 300 个流式增量，比较正常与慢客户端
 ```
 
+固定桩默认使用本地身份写入语料。对启用 OIDC 的目标运行时，先将令牌 `sub` 加入服务端 `APP_AUTH_PUBLISHER_SUBJECTS`，并以 `AGENTGO_ACCESS_TOKEN=... sh benchmarks/seed.sh` 导入；聊天 runner 与负载脚本使用同一变量携带 Bearer token。
+
 真实模型运行 `sh benchmarks/compose-real.sh up -d --build`，服务端口为 `18081`。该环境使用 `benchmarks/config.real-gpt.yaml` 和 `.env` 中的 GPT-5.5 凭据，工具决策也由 GPT-5.5 完成；Benchmark Compose 将后台记忆提取超时设为 60 秒。先确认模型与 Embedding 可用，再以 `-backend real`、`-base-url http://localhost:18081` 跑少量效果用例。不要混合固定桩与真实模型的容量结果。两个 Compose project 可分别用对应脚本加 `down` 停止；要清空测试数据卷时显式加 `-v`。
 
 ### 指标口径

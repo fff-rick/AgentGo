@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.uber.org/zap"
 
+	"github.com/enterprise/ai-agent-go/internal/auth"
+	"github.com/enterprise/ai-agent-go/internal/handler"
 	"github.com/enterprise/ai-agent-go/internal/metrics"
 	"github.com/enterprise/ai-agent-go/internal/trace"
 	"github.com/enterprise/ai-agent-go/pkg/common"
@@ -20,6 +24,30 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
+
+func TestDocumentRoutesUseAuthenticationMiddleware(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	documents := handler.NewDocumentHandler(nil, nil, zap.NewNop(), []string{auth.LocalUserID})
+	Register(engine, nil, nil, nil, nil, documents, nil)
+
+	for _, test := range []struct {
+		method, path, body string
+		want               int
+	}{
+		{http.MethodPost, "/api/v1/documents", `{}`, http.StatusBadRequest},
+		{http.MethodPost, "/api/v1/documents/import", ``, http.StatusBadRequest},
+		{http.MethodGet, "/api/v1/documents/doc-1", ``, http.StatusServiceUnavailable},
+	} {
+		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		engine.ServeHTTP(response, request)
+		if response.Code != test.want {
+			t.Fatalf("%s %s status=%d body=%s", test.method, test.path, response.Code, response.Body.String())
+		}
+	}
+}
 
 func TestHTTPMetricsUseRouteTemplateAndSkipScrapes(t *testing.T) {
 	gin.SetMode(gin.TestMode)

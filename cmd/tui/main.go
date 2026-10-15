@@ -447,9 +447,7 @@ func stream(ctx context.Context, baseURL, session, query, mode string, approvedP
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if token := os.Getenv("AGENTGO_ACCESS_TOKEN"); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	setAuthorization(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -502,9 +500,7 @@ func createSession(ctx context.Context, baseURL, userID string) (string, error) 
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if token := os.Getenv("AGENTGO_ACCESS_TOKEN"); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	setAuthorization(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
@@ -590,6 +586,7 @@ func importDocument(ctx context.Context, baseURL, path string, events chan<- str
 		return
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	setAuthorization(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -631,6 +628,7 @@ func importDocument(ctx context.Context, baseURL, path string, events chan<- str
 				sendError(events, err)
 				return
 			}
+			setAuthorization(statusReq)
 			statusResp, err := http.DefaultClient.Do(statusReq)
 			if err != nil {
 				if ctx.Err() == nil {
@@ -669,6 +667,12 @@ func importDocument(ctx context.Context, baseURL, path string, events chan<- str
 		Type: observe.TypeStatus, Stage: "import",
 		Message: fmt.Sprintf("导入完成：%s，%d 个分块，doc_id=%s", result.Data.Title, result.Data.ChunkCount, result.Data.DocID),
 	})
+}
+
+func setAuthorization(req *http.Request) {
+	if token := strings.TrimSpace(os.Getenv("AGENTGO_ACCESS_TOKEN")); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 }
 
 func sendObserve(events chan<- streamEvent, event observe.Event) {
