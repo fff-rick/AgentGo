@@ -24,6 +24,8 @@ import (
 	"github.com/enterprise/ai-agent-go/pkg/common"
 )
 
+const maxChatJSONBytes = 256 << 10
+
 // ChatHandler 对话请求处理器
 type ChatHandler struct {
 	orchestrator *agent.Orchestrator
@@ -44,8 +46,7 @@ func NewChatHandler(orchestrator *agent.Orchestrator, sessions memory.SessionMan
 // POST /api/v1/chat
 func (h *ChatHandler) Chat(c *gin.Context) {
 	var req model.ChatRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "请求参数错误: "+err.Error())
+	if !bindLimitedJSON(c, &req, maxChatJSONBytes) {
 		return
 	}
 	if !validExecutionMode(req.Options) {
@@ -107,8 +108,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 // POST /api/v1/chat/stream
 func (h *ChatHandler) ChatStream(c *gin.Context) {
 	var req model.ChatRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "请求参数错误: "+err.Error())
+	if !bindLimitedJSON(c, &req, maxChatJSONBytes) {
 		return
 	}
 	if !validExecutionMode(req.Options) {

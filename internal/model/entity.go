@@ -73,19 +73,21 @@ type MemoryVersion struct {
 
 // Document 文档实体
 type Document struct {
-	ID          string         `json:"id"`
-	Title       string         `json:"title"`
-	Content     string         `json:"content"`
-	ContentType string         `json:"content_type"`
-	ContentHash string         `json:"-"`
-	Tags        []string       `json:"tags"`
-	Status      string         `json:"status"`
-	ChunkCount  int            `json:"chunk_count"`
-	Metadata    map[string]any `json:"metadata"`
-	Filename    string         `json:"-"`
-	RawContent  []byte         `json:"-"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	ID                  string         `json:"id"`
+	Title               string         `json:"title"`
+	Content             string         `json:"content"`
+	ContentType         string         `json:"content_type"`
+	ContentHash         string         `json:"-"`
+	ExpectedContentHash string         `json:"-"`
+	Tags                []string       `json:"tags"`
+	Status              string         `json:"status"`
+	ChunkCount          int            `json:"chunk_count"`
+	Metadata            map[string]any `json:"metadata"`
+	Filename            string         `json:"-"`
+	RawContent          []byte         `json:"-"`
+	ImportReserved      bool           `json:"-"`
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
 }
 
 // DocumentChunk 文档分块

@@ -55,9 +55,9 @@ func Register(engine *gin.Engine, verifier *auth.Verifier, chatH *handler.ChatHa
 		protected.DELETE("/memories/:id", memoryH.Delete)
 
 		// 文档接口
-		v1.POST("/documents", docH.Upload)
-		v1.POST("/documents/import", docH.ImportDocument)
-		v1.GET("/documents/:id", docH.GetStatus)
+		protected.POST("/documents", docH.Upload)
+		protected.POST("/documents/import", docH.ImportDocument)
+		protected.GET("/documents/:id", docH.GetStatus)
 	}
 }
 
@@ -141,8 +141,8 @@ func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, traceparent")
-		c.Header("Access-Control-Expose-Headers", "X-Request-ID, X-Trace-ID")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, If-Match, X-Request-ID, traceparent")
+		c.Header("Access-Control-Expose-Headers", "ETag, X-Request-ID, X-Trace-ID")
 		c.Header("Access-Control-Max-Age", "86400")
 
 		if c.Request.Method == "OPTIONS" {

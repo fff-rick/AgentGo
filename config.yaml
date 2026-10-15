@@ -31,6 +31,12 @@ memory:
   extraction_min_importance: 0.7
   extraction_max_items: 5
 
+auth:
+  enabled: false
+  issuer: ""
+  audience: ""
+  publisher_subjects: []
+
 context:
   max_input_tokens: 30000
   recent_messages: 20
@@ -40,8 +46,13 @@ tools:
   lazy_load_threshold: 3
   max_discovery_calls: 4
 
+database_tool:
+  dsn: ""
+  allowed_views: []
+
 filesystem:
-  enabled: true
+  enabled: false
+  workspace_root: ""
 
 skills:
   enabled: true

@@ -1,6 +1,6 @@
 module github.com/enterprise/ai-agent-go
 
-go 1.22
+go 1.25.0
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.4

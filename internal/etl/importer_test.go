@@ -3,6 +3,7 @@ package etl
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,29 @@ import (
 
 	"github.com/enterprise/ai-agent-go/internal/model"
 )
+
+func TestImporterRejectsConflictingOverwriteBeforeQueueing(t *testing.T) {
+	currentHash := ContentHash("old")
+	repo := &importRepositoryStub{doc: &model.DocumentResponse{
+		DocID: DocumentID("markdown", "Guide"), Title: "Guide", Status: "completed",
+		ContentHash: currentHash, CreatedAt: time.Unix(1, 0),
+	}}
+	parser := &parserStub{}
+	pipeline := newTestPipeline(parser, &vectorDBStub{}, &embedderStub{}, repo)
+	importer, err := NewImporter(context.Background(), pipeline, repo, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer importer.Close()
+	doc := &model.Document{Title: "Guide", ContentType: "markdown", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+
+	if _, queued, err := importer.Submit(context.Background(), doc, []byte("new")); !errors.Is(err, ErrDocumentConflict) || queued {
+		t.Fatalf("queued=%v err=%v, want conflict", queued, err)
+	}
+	if parser.calls != 0 || repo.current().ContentHash != currentHash {
+		t.Fatal("conflicting import changed state or reached ETL")
+	}
+}
 
 func TestImporterTransitionsToCompleted(t *testing.T) {
 	repo := &importRepositoryStub{}

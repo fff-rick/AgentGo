@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,14 +19,17 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/enterprise/ai-agent-go/internal/auth"
 	"github.com/enterprise/ai-agent-go/internal/etl"
 	"github.com/enterprise/ai-agent-go/internal/model"
 	"github.com/enterprise/ai-agent-go/pkg/common"
 )
 
 const (
-	maxMarkdownBytes = 10 << 20
-	maxDocumentBytes = 50 << 20
+	maxMarkdownBytes         = 10 << 20
+	maxDocumentBytes         = 50 << 20
+	maxDocumentMetadataBytes = 64 << 10
+	maxDocumentJSONBytes     = maxMarkdownBytes + maxDocumentMetadataBytes + (1 << 20)
 )
 
 // DocumentHandler 文档处理器
@@ -33,6 +38,7 @@ type DocumentHandler struct {
 	importer     *etl.Importer
 	documentRepo documentReader
 	logger       *zap.Logger
+	publishers   map[string]struct{}
 }
 
 type documentReader interface {
@@ -40,10 +46,15 @@ type documentReader interface {
 }
 
 // NewDocumentHandler 创建文档处理器
-func NewDocumentHandler(pipeline *etl.Pipeline, importer *etl.Importer, logger *zap.Logger, repos ...documentReader) *DocumentHandler {
+func NewDocumentHandler(pipeline *etl.Pipeline, importer *etl.Importer, logger *zap.Logger, publisherSubjects []string, repos ...documentReader) *DocumentHandler {
 	h := &DocumentHandler{
 		pipeline: pipeline, importer: importer,
-		logger: logger,
+		logger: logger, publishers: make(map[string]struct{}, len(publisherSubjects)),
+	}
+	for _, subject := range publisherSubjects {
+		if subject = strings.TrimSpace(subject); subject != "" {
+			h.publishers[subject] = struct{}{}
+		}
 	}
 	if len(repos) > 0 {
 		h.documentRepo = repos[0]
@@ -54,16 +65,38 @@ func NewDocumentHandler(pipeline *etl.Pipeline, importer *etl.Importer, logger *
 // Upload 上传文档
 // POST /api/v1/documents
 func (h *DocumentHandler) Upload(c *gin.Context) {
+	if !h.canPublish(c) {
+		common.FailWithCode(c, http.StatusForbidden, common.ErrCodeForbidden, "当前身份没有共享知识库写入权限")
+		return
+	}
 	var req model.DocumentUploadRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "请求参数错误: "+err.Error())
+	if !bindLimitedJSON(c, &req, maxDocumentJSONBytes) {
+		return
+	}
+	if len([]byte(req.Content)) > maxMarkdownBytes {
+		common.FailWithCode(c, http.StatusRequestEntityTooLarge, common.ErrCodeInvalidParam, "文档文本不能超过 10 MiB")
+		return
+	}
+	metadata, err := json.Marshal(req.Metadata)
+	if err != nil {
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "metadata 不是有效的 JSON")
+		return
+	}
+	if len(metadata) > maxDocumentMetadataBytes {
+		common.FailWithCode(c, http.StatusRequestEntityTooLarge, common.ErrCodeInvalidParam, "文档 metadata 不能超过 64 KiB")
+		return
+	}
+	expectedHash, err := expectedContentHash(c, req.ExpectedContentHash)
+	if err != nil {
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, err.Error())
 		return
 	}
 
 	doc := &model.Document{
 		Title: req.Title, Content: req.Content,
 		ContentType: req.ContentType, Tags: req.Tags, Metadata: req.Metadata,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		ExpectedContentHash: expectedHash,
+		CreatedAt:           time.Now(), UpdatedAt: time.Now(),
 	}
 	h.process(c, doc)
 }
@@ -71,6 +104,10 @@ func (h *DocumentHandler) Upload(c *gin.Context) {
 // ImportDocument asynchronously imports a supported local document.
 // POST /api/v1/documents/import，multipart 字段名为 file，title 可选。
 func (h *DocumentHandler) ImportDocument(c *gin.Context) {
+	if !h.canPublish(c) {
+		common.FailWithCode(c, http.StatusForbidden, common.ErrCodeForbidden, "当前身份没有共享知识库写入权限")
+		return
+	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxDocumentBytes+(1<<20))
 	header, err := c.FormFile("file")
 	if err != nil {
@@ -131,16 +168,26 @@ func (h *DocumentHandler) ImportDocument(c *gin.Context) {
 		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "文档标题不能为空")
 		return
 	}
+	expectedHash, err := expectedContentHash(c, c.PostForm("expected_content_hash"))
+	if err != nil {
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, err.Error())
+		return
+	}
 	doc := &model.Document{
 		Title: title, ContentType: docType, Filename: filepath.Base(header.Filename),
-		Metadata:  map[string]any{"source_file": filepath.Base(header.Filename)},
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		Metadata:            map[string]any{"source_file": filepath.Base(header.Filename)},
+		ExpectedContentHash: expectedHash,
+		CreatedAt:           time.Now(), UpdatedAt: time.Now(),
 	}
 	if h.importer == nil {
 		common.FailWithCode(c, http.StatusServiceUnavailable, common.ErrCodeInternal, "文档导入服务未配置")
 		return
 	}
 	resp, queued, err := h.importer.Submit(c.Request.Context(), doc, content)
+	if errors.Is(err, etl.ErrDocumentConflict) {
+		common.FailWithCode(c, http.StatusConflict, common.ErrCodeConflict, err.Error())
+		return
+	}
 	if errors.Is(err, etl.ErrImportQueueFull) {
 		common.FailWithCode(c, http.StatusServiceUnavailable, common.ErrCodeInternal, err.Error())
 		return
@@ -154,6 +201,7 @@ func (h *DocumentHandler) ImportDocument(c *gin.Context) {
 	if queued || resp.Status == "processing" {
 		status = http.StatusAccepted
 	}
+	setDocumentETag(c, resp.ContentHash)
 	c.JSON(status, common.Result{Code: 0, Message: "success", Data: resp, TraceID: c.GetString("trace_id")})
 }
 
@@ -198,11 +246,16 @@ func (h *DocumentHandler) process(c *gin.Context, doc *model.Document) {
 		zap.Int("content_len", len(doc.Content)),
 	)
 	resp, err := h.pipeline.ProcessDocument(c.Request.Context(), doc)
+	if errors.Is(err, etl.ErrDocumentConflict) {
+		common.FailWithCode(c, http.StatusConflict, common.ErrCodeConflict, err.Error())
+		return
+	}
 	if err != nil {
 		h.logger.Error("文档处理失败", zap.String("doc_id", doc.ID), zap.Error(err))
 		common.Fail(c, http.StatusInternalServerError, common.ErrInternal(err))
 		return
 	}
+	setDocumentETag(c, resp.ContentHash)
 	common.OK(c, resp)
 }
 
@@ -229,5 +282,57 @@ func (h *DocumentHandler) GetStatus(c *gin.Context) {
 		common.Fail(c, http.StatusInternalServerError, common.ErrInternal(err))
 		return
 	}
+	setDocumentETag(c, doc.ContentHash)
 	common.OK(c, doc)
+}
+
+func (h *DocumentHandler) canPublish(c *gin.Context) bool {
+	_, ok := h.publishers[auth.Principal(c)]
+	return ok
+}
+
+func bindLimitedJSON(c *gin.Context, target any, limit int64) bool {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+	if err := c.ShouldBindJSON(target); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			common.FailWithCode(c, http.StatusRequestEntityTooLarge, common.ErrCodeInvalidParam, "请求体过大")
+			return false
+		}
+		common.FailWithCode(c, http.StatusBadRequest, common.ErrCodeInvalidParam, "请求参数错误: "+err.Error())
+		return false
+	}
+	return true
+}
+
+func expectedContentHash(c *gin.Context, bodyValue string) (string, error) {
+	headerValue := strings.TrimSpace(c.GetHeader("If-Match"))
+	if headerValue != "" {
+		if strings.HasPrefix(headerValue, "W/") {
+			return "", errors.New("If-Match 必须使用强 ETag")
+		}
+		headerValue = strings.Trim(headerValue, `"`)
+	}
+	bodyValue = strings.TrimSpace(bodyValue)
+	if headerValue != "" && bodyValue != "" && headerValue != bodyValue {
+		return "", errors.New("If-Match 与 expected_content_hash 不一致")
+	}
+	value := headerValue
+	if value == "" {
+		value = bodyValue
+	}
+	if value == "" {
+		return "", nil
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != 32 {
+		return "", errors.New("预期内容哈希必须是 64 位十六进制 SHA-256")
+	}
+	return strings.ToLower(value), nil
+}
+
+func setDocumentETag(c *gin.Context, contentHash string) {
+	if contentHash != "" {
+		c.Header("ETag", `"`+contentHash+`"`)
+	}
 }

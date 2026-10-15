@@ -148,7 +148,11 @@ func main() {
 
 	// 工具系统
 	toolRegistry := tool.NewRegistry()
-	registerBuiltinTools(toolRegistry, cfg.Search, cfg.Postgres, cfg.Filesystem, postgresClient, redisCache, logger)
+	closeTools, err := registerBuiltinTools(toolRegistry, cfg.Search, cfg.DatabaseTool, cfg.Filesystem, redisCache, logger)
+	if err != nil {
+		logger.Fatal("初始化内置工具失败", zap.Error(err))
+	}
+	defer closeTools()
 	var skillRegistry *skill.Registry
 	if cfg.Skills.Enabled {
 		skillRegistry, diagnostics := skill.Load(append([]string{"./skills"}, cfg.Skills.Paths...))
@@ -223,7 +227,11 @@ func main() {
 		logger.Fatal("初始化文档导入器失败", zap.Error(err))
 	}
 	defer importer.Close()
-	docHandler := handler.NewDocumentHandler(etlPipeline, importer, logger, postgresClient)
+	publisherSubjects := append([]string(nil), cfg.Auth.PublisherSubjects...)
+	if !cfg.Auth.Enabled {
+		publisherSubjects = []string{auth.LocalUserID}
+	}
+	docHandler := handler.NewDocumentHandler(etlPipeline, importer, logger, publisherSubjects, postgresClient)
 	healthHandler := handler.NewHealthHandler(redisCache, milvusClient, postgresClient, documentParser)
 
 	// ======================== 7. 配置路由并启动服务器 ========================
@@ -272,17 +280,32 @@ func main() {
 }
 
 // registerBuiltinTools 注册所有内置工具
-func registerBuiltinTools(registry *tool.Registry, searchCfg config.SearchConfig, postgresCfg config.PostgresConfig, filesystemCfg config.FilesystemConfig, postgresClient *database.Client, store cache.Cache, logger *zap.Logger) {
+func registerBuiltinTools(registry *tool.Registry, searchCfg config.SearchConfig, databaseCfg config.DatabaseToolConfig, filesystemCfg config.FilesystemConfig, store cache.Cache, logger *zap.Logger) (func(), error) {
 	tools := []tool.Tool{
 		toolbuiltin.NewSearchTool(searchCfg, logger),
 		toolbuiltin.NewCalculatorTool(logger),
-		toolbuiltin.NewDatabaseTool(postgresClient.DB(), postgresCfg, logger),
+	}
+	closeTools := func() {}
+	if strings.TrimSpace(databaseCfg.DSN) != "" {
+		dbTool, err := toolbuiltin.NewDatabaseTool(context.Background(), databaseCfg, logger)
+		if err != nil {
+			return nil, err
+		}
+		closeTools = func() { _ = dbTool.Close() }
+		tools = append(tools, dbTool)
 	}
 	if filesystemCfg.Enabled {
+		workspace, err := toolbuiltin.NewFileWorkspace(filesystemCfg.WorkspaceRoot)
+		if err != nil {
+			closeTools()
+			return nil, err
+		}
+		closeDatabase := closeTools
+		closeTools = func() { _ = workspace.Close(); closeDatabase() }
 		tools = append(tools,
-			toolbuiltin.NewFileInspectTool(),
-			toolbuiltin.NewFileEditPreviewTool(store),
-			toolbuiltin.NewFileEditApplyTool(store),
+			toolbuiltin.NewFileInspectTool(workspace),
+			toolbuiltin.NewFileEditPreviewTool(store, workspace),
+			toolbuiltin.NewFileEditApplyTool(store, workspace),
 		)
 	}
 	for _, t := range tools {
@@ -290,6 +313,7 @@ func registerBuiltinTools(registry *tool.Registry, searchCfg config.SearchConfig
 			logger.Warn("注册工具失败", zap.String("tool", t.Name()), zap.Error(err))
 		}
 	}
+	return closeTools, nil
 }
 
 // initLogger 根据配置初始化 zap 日志

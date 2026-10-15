@@ -9,6 +9,8 @@ const (
 	ErrCodeUnauthorized = 10002 // 未授权
 	ErrCodeNotFound     = 10003 // 资源不存在
 	ErrCodeRateLimit    = 10004 // 限流
+	ErrCodeForbidden    = 10005 // 无权限
+	ErrCodeConflict     = 10006 // 版本冲突
 	ErrCodeLLMFailed    = 20001 // LLM 调用失败
 	ErrCodeLLMTimeout   = 20002 // LLM 调用超时
 	ErrCodeCircuitOpen  = 20003 // 熔断器打开

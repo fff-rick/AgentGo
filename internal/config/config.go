@@ -16,24 +16,25 @@ import (
 
 // Config 应用程序全局配置结构
 type Config struct {
-	Server     ServerConfig     `mapstructure:"server"`
-	LLM        LLMConfig        `mapstructure:"llm"`
-	Laya       LayaConfig       `mapstructure:"laya"`
-	Redis      RedisConfig      `mapstructure:"redis"`
-	Milvus     MilvusConfig     `mapstructure:"milvus"`
-	Embedding  EmbeddingConfig  `mapstructure:"embedding"`
-	Postgres   PostgresConfig   `mapstructure:"postgres"`
-	Agent      AgentConfig      `mapstructure:"agent"`
-	RAG        RAGConfig        `mapstructure:"rag"`
-	Search     SearchConfig     `mapstructure:"search"`
-	Memory     MemoryConfig     `mapstructure:"memory"`
-	Auth       AuthConfig       `mapstructure:"auth"`
-	Context    ContextConfig    `mapstructure:"context"`
-	Tools      ToolConfig       `mapstructure:"tools"`
-	Filesystem FilesystemConfig `mapstructure:"filesystem"`
-	Skills     SkillConfig      `mapstructure:"skills"`
-	Log        LogConfig        `mapstructure:"log"`
-	Document   DocumentConfig   `mapstructure:"document"`
+	Server       ServerConfig       `mapstructure:"server"`
+	LLM          LLMConfig          `mapstructure:"llm"`
+	Laya         LayaConfig         `mapstructure:"laya"`
+	Redis        RedisConfig        `mapstructure:"redis"`
+	Milvus       MilvusConfig       `mapstructure:"milvus"`
+	Embedding    EmbeddingConfig    `mapstructure:"embedding"`
+	Postgres     PostgresConfig     `mapstructure:"postgres"`
+	DatabaseTool DatabaseToolConfig `mapstructure:"database_tool"`
+	Agent        AgentConfig        `mapstructure:"agent"`
+	RAG          RAGConfig          `mapstructure:"rag"`
+	Search       SearchConfig       `mapstructure:"search"`
+	Memory       MemoryConfig       `mapstructure:"memory"`
+	Auth         AuthConfig         `mapstructure:"auth"`
+	Context      ContextConfig      `mapstructure:"context"`
+	Tools        ToolConfig         `mapstructure:"tools"`
+	Filesystem   FilesystemConfig   `mapstructure:"filesystem"`
+	Skills       SkillConfig        `mapstructure:"skills"`
+	Log          LogConfig          `mapstructure:"log"`
+	Document     DocumentConfig     `mapstructure:"document"`
 }
 
 // ServerConfig HTTP 服务器配置
@@ -113,14 +114,22 @@ type EmbeddingConfig struct {
 
 // PostgresConfig PostgreSQL 数据库连接配置
 type PostgresConfig struct {
-	Host         string        `mapstructure:"host"`
-	Port         int           `mapstructure:"port"`
-	User         string        `mapstructure:"user"`
-	Password     string        `mapstructure:"password"`
-	DBName       string        `mapstructure:"dbname"`
-	SSLMode      string        `mapstructure:"ssl_mode"`
-	QueryTimeout time.Duration `mapstructure:"query_timeout"`
-	MaxRows      int           `mapstructure:"max_rows"`
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+	DBName   string `mapstructure:"dbname"`
+	SSLMode  string `mapstructure:"ssl_mode"`
+}
+
+type DatabaseToolConfig struct {
+	DSN            string        `mapstructure:"dsn"`
+	AllowedViews   []string      `mapstructure:"allowed_views"`
+	QueryTimeout   time.Duration `mapstructure:"query_timeout"`
+	MaxRows        int           `mapstructure:"max_rows"`
+	MaxSQLBytes    int           `mapstructure:"max_sql_bytes"`
+	MaxCellBytes   int           `mapstructure:"max_cell_bytes"`
+	MaxResultBytes int           `mapstructure:"max_result_bytes"`
 }
 
 // AgentConfig Agent 编排器配置
@@ -141,9 +150,10 @@ type MemoryConfig struct {
 }
 
 type AuthConfig struct {
-	Enabled  bool   `mapstructure:"enabled"`
-	Issuer   string `mapstructure:"issuer"`
-	Audience string `mapstructure:"audience"`
+	Enabled           bool     `mapstructure:"enabled"`
+	Issuer            string   `mapstructure:"issuer"`
+	Audience          string   `mapstructure:"audience"`
+	PublisherSubjects []string `mapstructure:"publisher_subjects"`
 }
 
 type ContextConfig struct {
@@ -158,7 +168,8 @@ type ToolConfig struct {
 }
 
 type FilesystemConfig struct {
-	Enabled bool `mapstructure:"enabled"`
+	Enabled       bool   `mapstructure:"enabled"`
+	WorkspaceRoot string `mapstructure:"workspace_root"`
 }
 
 type SkillConfig struct {
@@ -247,6 +258,9 @@ func Load(path string) (*Config, error) {
 
 	expandModelEnv(cfg.LLM.Models)
 	applySingleModelEnv(cfg)
+	if cfg.Filesystem.Enabled && strings.TrimSpace(cfg.Filesystem.WorkspaceRoot) == "" {
+		return nil, fmt.Errorf("启用文件工具必须配置 filesystem.workspace_root")
+	}
 
 	return cfg, nil
 }
@@ -336,8 +350,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("postgres.password", "postgres")
 	v.SetDefault("postgres.dbname", "ai_agent")
 	v.SetDefault("postgres.ssl_mode", "disable")
-	v.SetDefault("postgres.query_timeout", "10s")
-	v.SetDefault("postgres.max_rows", 100)
+	v.SetDefault("database_tool.dsn", "")
+	v.SetDefault("database_tool.allowed_views", []string{})
+	v.SetDefault("database_tool.query_timeout", "10s")
+	v.SetDefault("database_tool.max_rows", 100)
+	v.SetDefault("database_tool.max_sql_bytes", 16384)
+	v.SetDefault("database_tool.max_cell_bytes", 65536)
+	v.SetDefault("database_tool.max_result_bytes", 1048576)
 
 	// Agent 默认配置
 	v.SetDefault("agent.max_iterations", 10)
@@ -355,12 +374,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.enabled", false)
 	v.SetDefault("auth.issuer", "")
 	v.SetDefault("auth.audience", "")
+	v.SetDefault("auth.publisher_subjects", []string{})
 	v.SetDefault("context.max_input_tokens", 30000)
 	v.SetDefault("context.recent_messages", 20)
 	v.SetDefault("context.summary_max_tokens", 2000)
 	v.SetDefault("tools.lazy_load_threshold", 3)
 	v.SetDefault("tools.max_discovery_calls", 4)
-	v.SetDefault("filesystem.enabled", true)
+	v.SetDefault("filesystem.enabled", false)
+	v.SetDefault("filesystem.workspace_root", "")
 	v.SetDefault("skills.enabled", true)
 	v.SetDefault("skills.paths", []string{})
 

@@ -58,6 +58,7 @@ func TestProcessDocumentSkipsUnchangedContent(t *testing.T) {
 func TestProcessDocumentReplacesContentAndDeletesStaleVectors(t *testing.T) {
 	createdAt := time.Unix(100, 0)
 	doc := testDocument("New.")
+	doc.ExpectedContentHash = ContentHash("Old. content. here.")
 	docID := DocumentID(doc.ContentType, doc.Title)
 	vectors := &vectorDBStub{}
 	indexer := &indexerStub{existing: &model.DocumentResponse{
@@ -83,6 +84,7 @@ func TestProcessDocumentReplacesContentAndDeletesStaleVectors(t *testing.T) {
 
 func TestProcessDocumentGrowthDoesNotDeleteVectors(t *testing.T) {
 	doc := testDocument("aa.bb.cc.")
+	doc.ExpectedContentHash = ContentHash("old")
 	docID := DocumentID(doc.ContentType, doc.Title)
 	vectors := &vectorDBStub{}
 	indexer := &indexerStub{existing: &model.DocumentResponse{
@@ -112,6 +114,7 @@ func TestProcessDocumentFailuresRemainRetryable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			doc := testDocument("New.")
+			doc.ExpectedContentHash = ContentHash("Old.")
 			indexer := &indexerStub{existing: &model.DocumentResponse{
 				DocID: DocumentID(doc.ContentType, doc.Title), ChunkCount: 2,
 				ContentHash: ContentHash("Old."), CreatedAt: doc.CreatedAt,
@@ -134,6 +137,24 @@ func TestProcessDocumentFailuresRemainRetryable(t *testing.T) {
 				t.Fatal("successful retry did not persist new content hash")
 			}
 		})
+	}
+}
+
+func TestProcessDocumentRejectsConflictingOverwriteBeforeETL(t *testing.T) {
+	doc := testDocument("New content")
+	doc.ExpectedContentHash = ContentHash("stale content")
+	parser, embedder := &parserStub{}, &embedderStub{}
+	vectors := &vectorDBStub{}
+	indexer := &indexerStub{existing: &model.DocumentResponse{
+		DocID: DocumentID(doc.ContentType, doc.Title), Status: "completed",
+		ContentHash: ContentHash("current content"), CreatedAt: doc.CreatedAt,
+	}}
+
+	if _, err := newTestPipeline(parser, vectors, embedder, indexer).ProcessDocument(context.Background(), doc); !errors.Is(err, ErrDocumentConflict) {
+		t.Fatalf("err=%v, want conflict", err)
+	}
+	if parser.calls != 0 || embedder.calls != 0 || vectors.insertCalls != 0 || indexer.indexCalls != 0 {
+		t.Fatal("conflicting overwrite reached ETL")
 	}
 }
 

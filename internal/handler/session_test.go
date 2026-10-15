@@ -99,6 +99,32 @@ func TestChatEndpointsRejectUnknownSessionBeforeRunningAgent(t *testing.T) {
 	}
 }
 
+func TestChatEndpointsRejectOversizedBodyBeforeSessionLookup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	manager := &sessionManagerStub{}
+	handler := NewChatHandler(nil, manager, zap.NewNop())
+	body := `{"session_id":"session-1","message":"` + strings.Repeat("x", maxChatJSONBytes) + `"}`
+	for _, path := range []string{"/api/v1/chat", "/api/v1/chat/stream"} {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = req
+		auth.SetIdentity(ctx, "user-1")
+		if path == "/api/v1/chat" {
+			handler.Chat(ctx)
+		} else {
+			handler.ChatStream(ctx)
+		}
+		if recorder.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("path=%s status=%d body=%s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+	if manager.getCalls != 0 {
+		t.Fatalf("oversized requests reached session lookup: %d", manager.getCalls)
+	}
+}
+
 func TestChatEndpointsReadSessionOnce(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, path := range []string{"/api/v1/chat", "/api/v1/chat/stream"} {

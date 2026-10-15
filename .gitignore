@@ -13,3 +13,5 @@ id_ed25519
 benchmark-report.json
 benchmarks/reports/
 docs/png/
+
+/data/workspaces/

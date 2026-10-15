@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -32,19 +35,21 @@ type proposalStore interface {
 	Delete(context.Context, string) error
 }
 
-type FileInspectTool struct{}
+type FileInspectTool struct{ workspace *FileWorkspace }
 
-func NewFileInspectTool() *FileInspectTool { return &FileInspectTool{} }
-func (*FileInspectTool) Name() string      { return "file_inspect" }
+func NewFileInspectTool(workspace *FileWorkspace) *FileInspectTool {
+	return &FileInspectTool{workspace: workspace}
+}
+func (*FileInspectTool) Name() string { return "file_inspect" }
 func (*FileInspectTool) Description() string {
-	return "浏览、搜索或分段读取服务进程可访问的 UTF-8 本地文本文件；路径必须是绝对路径"
+	return "浏览、搜索或分段读取当前用户工作目录内的 UTF-8 文本；相对路径以用户工作目录为根，path 为 . 可列出根目录"
 }
 func (*FileInspectTool) Parameters() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"action":      map[string]interface{}{"type": "string", "enum": []string{"list", "search", "read"}},
-			"path":        map[string]interface{}{"type": "string", "description": "服务进程可见的绝对路径"},
+			"path":        map[string]interface{}{"type": "string", "description": "当前用户工作目录内的相对或绝对路径"},
 			"query":       map[string]interface{}{"type": "string", "description": "search 使用的固定文本，不支持正则"},
 			"pattern":     map[string]interface{}{"type": "string", "description": "search 文件名 glob，默认 *"},
 			"start_line":  map[string]interface{}{"type": "integer", "minimum": 1},
@@ -65,23 +70,28 @@ type fileInspectParams struct {
 	MaxResults int    `json:"max_results"`
 }
 
-func (*FileInspectTool) Execute(ctx context.Context, input string) (*tool.ToolResult, error) {
+func (t *FileInspectTool) Execute(ctx context.Context, input string) (*tool.ToolResult, error) {
 	var params fileInspectParams
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
 		return tool.NewErrorResult("参数解析失败: " + err.Error()), nil
 	}
-	path, err := canonicalPath(params.Path)
+	access, err := t.workspace.open(ctx)
+	if err != nil {
+		return tool.NewErrorResult(err.Error()), nil
+	}
+	defer access.root.Close()
+	path, err := access.resolve(params.Path)
 	if err != nil {
 		return tool.NewErrorResult(err.Error()), nil
 	}
 	var output any
 	switch params.Action {
 	case "list":
-		output, err = listDirectory(path)
+		output, err = listDirectory(access, path)
 	case "search":
-		output, err = searchFiles(ctx, path, params.Query, params.Pattern, params.MaxResults)
+		output, err = searchFiles(ctx, access, path, params.Query, params.Pattern, params.MaxResults)
 	case "read":
-		output, err = readFileLines(path, params.StartLine, params.EndLine)
+		output, err = readFileLines(access, path, params.StartLine, params.EndLine)
 	default:
 		err = fmt.Errorf("action 只支持 list、search 或 read")
 	}
@@ -95,8 +105,8 @@ func (*FileInspectTool) Execute(ctx context.Context, input string) (*tool.ToolRe
 	return tool.NewSuccessResult(string(encoded)), nil
 }
 
-func listDirectory(path string) (map[string]any, error) {
-	directory, err := os.Open(path)
+func listDirectory(access *fileAccess, path string) (map[string]any, error) {
+	directory, err := access.root.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -119,12 +129,12 @@ func listDirectory(path string) (map[string]any, error) {
 		} else if entry.Type() != 0 {
 			kind = "other"
 		}
-		items = append(items, map[string]any{"name": entry.Name(), "path": filepath.Join(path, entry.Name()), "type": kind})
+		items = append(items, map[string]any{"name": entry.Name(), "path": access.absolute(filepath.Join(path, entry.Name())), "type": kind})
 	}
-	return map[string]any{"path": path, "entries": items, "truncated": truncated}, nil
+	return map[string]any{"path": access.absolute(path), "entries": items, "truncated": truncated}, nil
 }
 
-func searchFiles(ctx context.Context, root, query, pattern string, limit int) (map[string]any, error) {
+func searchFiles(ctx context.Context, access *fileAccess, root, query, pattern string, limit int) (map[string]any, error) {
 	if query == "" {
 		return nil, fmt.Errorf("query 不能为空")
 	}
@@ -143,7 +153,7 @@ func searchFiles(ctx context.Context, root, query, pattern string, limit int) (m
 	matches := make([]map[string]any, 0)
 	stopped := false
 	errStop := fmt.Errorf("result limit reached")
-	walkErr := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+	walkErr := fs.WalkDir(access.root.FS(), filepath.ToSlash(root), func(path string, entry os.DirEntry, err error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -156,17 +166,20 @@ func searchFiles(ctx context.Context, root, query, pattern string, limit int) (m
 		if entry.IsDir() {
 			return nil
 		}
+		if _, err := access.resolve(path); err != nil {
+			return nil
+		}
 		matched, _ := filepath.Match(pattern, entry.Name())
 		if !matched {
 			return nil
 		}
-		content, _, readErr := readTextFile(path)
+		content, _, readErr := access.readTextFile(path)
 		if readErr != nil {
 			return nil
 		}
 		for index, line := range strings.Split(content, "\n") {
 			if strings.Contains(line, query) {
-				matches = append(matches, map[string]any{"path": path, "line": index + 1, "content": line})
+				matches = append(matches, map[string]any{"path": access.absolute(path), "line": index + 1, "content": line})
 				if len(matches) >= limit {
 					stopped = true
 					return errStop
@@ -178,11 +191,11 @@ func searchFiles(ctx context.Context, root, query, pattern string, limit int) (m
 	if walkErr != nil && walkErr != errStop {
 		return nil, walkErr
 	}
-	return map[string]any{"root": root, "matches": matches, "truncated": stopped}, nil
+	return map[string]any{"root": access.absolute(root), "matches": matches, "truncated": stopped}, nil
 }
 
-func readFileLines(path string, start, end int) (map[string]any, error) {
-	content, hash, err := readTextFile(path)
+func readFileLines(access *fileAccess, path string, start, end int) (map[string]any, error) {
+	content, hash, err := access.readTextFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -203,13 +216,16 @@ func readFileLines(path string, start, end int) (map[string]any, error) {
 	for index := start; index <= end; index++ {
 		selected = append(selected, map[string]any{"line": index, "content": lines[index-1]})
 	}
-	return map[string]any{"path": path, "sha256": hash, "total_lines": len(lines), "lines": selected}, nil
+	return map[string]any{"path": access.absolute(path), "sha256": hash, "total_lines": len(lines), "lines": selected}, nil
 }
 
-type FileEditPreviewTool struct{ store proposalStore }
+type FileEditPreviewTool struct {
+	store     proposalStore
+	workspace *FileWorkspace
+}
 
-func NewFileEditPreviewTool(store proposalStore) *FileEditPreviewTool {
-	return &FileEditPreviewTool{store: store}
+func NewFileEditPreviewTool(store proposalStore, workspace *FileWorkspace) *FileEditPreviewTool {
+	return &FileEditPreviewTool{store: store, workspace: workspace}
 }
 func (*FileEditPreviewTool) Name() string { return "file_edit_preview" }
 func (*FileEditPreviewTool) Description() string {
@@ -219,7 +235,7 @@ func (*FileEditPreviewTool) Parameters() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"path":            map[string]interface{}{"type": "string", "description": "绝对文件路径"},
+			"path":            map[string]interface{}{"type": "string", "description": "当前用户工作目录内的相对或绝对文件路径"},
 			"expected_sha256": map[string]interface{}{"type": "string", "description": "file_inspect read 返回的 SHA-256"},
 			"replacements": map[string]interface{}{
 				"type": "array", "minItems": 1,
@@ -263,11 +279,16 @@ func (t *FileEditPreviewTool) Execute(ctx context.Context, input string) (*tool.
 	if scope.UserID == "" || scope.SessionID == "" {
 		return tool.NewErrorResult("文件修改缺少用户或会话上下文"), nil
 	}
-	path, err := canonicalPath(params.Path)
+	access, err := t.workspace.open(ctx)
 	if err != nil {
 		return tool.NewErrorResult(err.Error()), nil
 	}
-	content, hash, err := readTextFile(path)
+	defer access.root.Close()
+	path, err := access.resolve(params.Path)
+	if err != nil {
+		return tool.NewErrorResult(err.Error()), nil
+	}
+	content, hash, err := access.readTextFile(path)
 	if err != nil {
 		return tool.NewErrorResult(err.Error()), nil
 	}
@@ -296,11 +317,11 @@ func (t *FileEditPreviewTool) Execute(ctx context.Context, input string) (*tool.
 	if updated == content {
 		return tool.NewErrorResult("修改前后内容相同"), nil
 	}
-	info, err := os.Stat(path)
+	info, err := access.root.Stat(path)
 	if err != nil {
 		return tool.NewErrorResult(err.Error()), nil
 	}
-	proposal := fileProposal{ID: uuid.NewString(), UserID: scope.UserID, SessionID: scope.SessionID, Path: path,
+	proposal := fileProposal{ID: uuid.NewString(), UserID: scope.UserID, SessionID: scope.SessionID, Path: access.absolute(path),
 		OriginalSHA256: hash, NewSHA256: hashText(updated), NewContent: updated, Mode: uint32(info.Mode().Perm()), Status: "pending", CreatedAt: time.Now().UTC()}
 	encoded, err := json.Marshal(proposal)
 	if err != nil {
@@ -309,7 +330,7 @@ func (t *FileEditPreviewTool) Execute(ctx context.Context, input string) (*tool.
 	if err := t.store.Set(ctx, proposalKey+proposal.ID, string(encoded), proposalTTL); err != nil {
 		return nil, err
 	}
-	diff, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{A: strings.SplitAfter(content, "\n"), B: strings.SplitAfter(updated, "\n"), FromFile: path, ToFile: path + " (proposed)", Context: 3})
+	diff, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{A: strings.SplitAfter(content, "\n"), B: strings.SplitAfter(updated, "\n"), FromFile: access.absolute(path), ToFile: access.absolute(path) + " (proposed)", Context: 3})
 	if err != nil {
 		return nil, err
 	}
@@ -319,14 +340,17 @@ func (t *FileEditPreviewTool) Execute(ctx context.Context, input string) (*tool.
 		NewSHA256  string `json:"new_sha256"`
 		ExpiresIn  int    `json:"expires_in_seconds"`
 		Diff       string `json:"diff"`
-	}{proposal.ID, path, proposal.NewSHA256, int(proposalTTL.Seconds()), diff})
+	}{proposal.ID, proposal.Path, proposal.NewSHA256, int(proposalTTL.Seconds()), diff})
 	return tool.NewSuccessResult(string(output)), nil
 }
 
-type FileEditApplyTool struct{ store proposalStore }
+type FileEditApplyTool struct {
+	store     proposalStore
+	workspace *FileWorkspace
+}
 
-func NewFileEditApplyTool(store proposalStore) *FileEditApplyTool {
-	return &FileEditApplyTool{store: store}
+func NewFileEditApplyTool(store proposalStore, workspace *FileWorkspace) *FileEditApplyTool {
+	return &FileEditApplyTool{store: store, workspace: workspace}
 }
 func (*FileEditApplyTool) Name() string { return tool.FileEditApplyName }
 func (*FileEditApplyTool) Description() string {
@@ -364,8 +388,27 @@ func (t *FileEditApplyTool) Execute(ctx context.Context, input string) (*tool.To
 	if err := json.Unmarshal([]byte(raw), &proposal); err != nil {
 		return nil, err
 	}
-	if proposal.Status != "pending" || proposal.UserID != scope.UserID || proposal.SessionID != scope.SessionID {
+	if scope.UserID == "" || scope.SessionID == "" || proposal.ID != params.ProposalID || proposal.Status != "pending" || proposal.UserID != scope.UserID || proposal.SessionID != scope.SessionID {
 		return tool.NewErrorResult("proposal 不属于当前用户和会话，或已在处理"), nil
+	}
+	access, err := t.workspace.open(ctx)
+	if err != nil {
+		return tool.NewErrorResult(err.Error()), nil
+	}
+	defer access.root.Close()
+	path, err := access.resolve(proposal.Path)
+	if err != nil {
+		return tool.NewErrorResult(err.Error()), nil
+	}
+	// Bounded lock stripes serialize the hash check and rename across tool instances.
+	lock := &fileCommitLocks[sha256.Sum256([]byte(access.absolute(path)))[0]]
+	lock.Lock()
+	defer lock.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := access.resolve(path); err != nil {
+		return tool.NewErrorResult(err.Error()), nil
 	}
 	proposal.Status = "applying"
 	applying, _ := json.Marshal(proposal)
@@ -376,12 +419,12 @@ func (t *FileEditApplyTool) Execute(ctx context.Context, input string) (*tool.To
 	if !claimed {
 		return tool.NewErrorResult("proposal 已被其他请求处理"), nil
 	}
-	_, hash, err := readTextFile(proposal.Path)
+	_, hash, err := access.readTextFile(path)
 	if err != nil || hash != proposal.OriginalSHA256 {
 		_ = t.store.Delete(ctx, key)
 		return tool.NewErrorResult("文件在预览后发生变化，请重新读取并预览"), nil
 	}
-	if err := atomicWriteFile(proposal.Path, []byte(proposal.NewContent), os.FileMode(proposal.Mode)); err != nil {
+	if err := access.atomicWriteFile(path, []byte(proposal.NewContent), os.FileMode(proposal.Mode)); err != nil {
 		_, _ = t.store.CompareAndSet(ctx, key, string(applying), raw, proposalTTL)
 		return tool.NewErrorResult("写入失败: " + err.Error()), nil
 	}
@@ -390,20 +433,115 @@ func (t *FileEditApplyTool) Execute(ctx context.Context, input string) (*tool.To
 	return tool.NewSuccessResult(string(output)), nil
 }
 
-func canonicalPath(path string) (string, error) {
-	if path == "" || !filepath.IsAbs(path) {
-		return "", fmt.Errorf("path 必须是绝对路径")
-	}
-	clean := filepath.Clean(path)
-	resolved, err := filepath.EvalSymlinks(clean)
-	if err != nil {
-		return "", err
-	}
-	return resolved, nil
+var fileCommitLocks [256]sync.Mutex
+
+// FileWorkspace anchors the configured directory; each request opens its own user root.
+type FileWorkspace struct {
+	root   string
+	handle *os.Root
+}
+type fileAccess struct {
+	root      *os.Root
+	directory string
 }
 
-func readTextFile(path string) (string, string, error) {
-	info, err := os.Stat(path)
+func NewFileWorkspace(root string) (*FileWorkspace, error) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		return nil, fmt.Errorf("此平台不支持文件工具所需的目录句柄隔离")
+	}
+	if !filepath.IsAbs(root) || filepath.Clean(root) == string(filepath.Separator) {
+		return nil, fmt.Errorf("filesystem.workspace_root 必须为专用工作目录的绝对路径")
+	}
+	path, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	return &FileWorkspace{root: path, handle: handle}, nil
+}
+
+func (w *FileWorkspace) Close() error { return w.handle.Close() }
+
+func (w *FileWorkspace) open(ctx context.Context) (*fileAccess, error) {
+	if w == nil {
+		return nil, fmt.Errorf("文件工作目录未配置")
+	}
+	userID := tool.ScopeFromContext(ctx).UserID
+	if userID == "" {
+		return nil, fmt.Errorf("文件访问缺少用户上下文")
+	}
+	name := hashText(userID)
+	if err := w.handle.Mkdir(name, 0o700); err != nil && !os.IsExist(err) {
+		return nil, err
+	}
+	info, err := w.handle.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("用户工作目录必须是真实目录，不允许符号链接")
+	}
+	root, err := w.handle.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := root.Stat(".")
+	if err != nil || !os.SameFile(info, opened) {
+		root.Close()
+		return nil, fmt.Errorf("用户工作目录在打开时发生变化")
+	}
+	return &fileAccess{root: root, directory: filepath.Join(w.root, name)}, nil
+}
+
+func (a *fileAccess) absolute(path string) string { return filepath.Join(a.directory, path) }
+
+func (a *fileAccess) resolve(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("path 不能为空")
+	}
+	if filepath.IsAbs(path) {
+		relative, err := filepath.Rel(a.directory, path)
+		if err != nil {
+			return "", err
+		}
+		path = relative
+	}
+	if !filepath.IsLocal(path) {
+		return "", fmt.Errorf("path 超出当前用户工作目录")
+	}
+	path = filepath.Clean(path)
+	part := "."
+	for _, name := range strings.Split(path, string(filepath.Separator)) {
+		part = filepath.Join(part, name)
+		info, err := a.root.Lstat(part)
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("工作目录内不允许符号链接")
+		}
+	}
+	// All later I/O uses this root handle too, so replacing a checked path cannot escape it.
+	return path, nil
+}
+
+func (a *fileAccess) readTextFile(path string) (string, string, error) {
+	info, err := a.root.Lstat(path)
+	if err != nil {
+		return "", "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", "", fmt.Errorf("仅支持普通文件")
+	}
+	file, err := a.root.Open(path)
+	if err != nil {
+		return "", "", err
+	}
+	defer file.Close()
+	info, err = file.Stat()
 	if err != nil {
 		return "", "", err
 	}
@@ -413,7 +551,7 @@ func readTextFile(path string) (string, string, error) {
 	if info.Size() > maxFileBytes {
 		return "", "", fmt.Errorf("文件超过 1 MiB")
 	}
-	content, err := os.ReadFile(path)
+	content, err := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
 	if err != nil {
 		return "", "", err
 	}
@@ -441,17 +579,17 @@ func contains(values []string, target string) bool {
 	return false
 }
 
-func atomicWriteFile(path string, content []byte, mode os.FileMode) (writeErr error) {
+func (a *fileAccess) atomicWriteFile(path string, content []byte, mode os.FileMode) (writeErr error) {
 	dir := filepath.Dir(path)
-	temp, err := os.CreateTemp(dir, ".agentgo-edit-*")
+	tempName := filepath.Join(dir, ".agentgo-edit-"+uuid.NewString())
+	temp, err := a.root.OpenFile(tempName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	tempName := temp.Name()
 	defer func() {
 		_ = temp.Close()
 		if writeErr != nil {
-			_ = os.Remove(tempName)
+			_ = a.root.Remove(tempName)
 		}
 	}()
 	if err = temp.Chmod(mode.Perm()); err != nil {
@@ -466,10 +604,10 @@ func atomicWriteFile(path string, content []byte, mode os.FileMode) (writeErr er
 	if err = temp.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(tempName, path); err != nil {
+	if err = a.root.Rename(tempName, path); err != nil {
 		return err
 	}
-	if directory, openErr := os.Open(dir); openErr == nil {
+	if directory, openErr := a.root.Open(dir); openErr == nil {
 		_ = directory.Sync()
 		_ = directory.Close()
 	}
